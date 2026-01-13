@@ -1,5 +1,18 @@
 # 🚀 Robust Tabletop 3D Perception System Development Plan
 
+## 0. 저장소 구조 (ROS2 Humble Workspace 기준)
+* **Workspace Root:** `enhanced_depth_ws/`
+* **패키지 위치:** `src/table_depth_fusion/`
+* **Python 모듈:** `src/table_depth_fusion/table_depth_fusion/`
+* **노드 파일(생성 대상):**
+    * `src/table_depth_fusion/table_depth_fusion/fusion_depth_calibration_node.py`
+    * `src/table_depth_fusion/table_depth_fusion/fusion_depth_node.py`
+* **설정/출력 파일(패키지 기준):** `src/table_depth_fusion/config/table_config.npz`
+* **Launch 파일(생성 대상):** `src/table_depth_fusion/launch/`
+* **setup.py entry_points (console_scripts):**
+    * `fusion_depth_calibration_node = table_depth_fusion.fusion_depth_calibration_node:main`
+    * `fusion_depth_node = table_depth_fusion.fusion_depth_node:main`
+
 ## 1. 프로젝트 개요 (Overview)
 * **목표:** Jetson Orin NX 환경에서 고정된 테이블 위 물체의 결측 없는(Hole-free) 3D 좌표 데이터를 실시간으로 생성.
 * **핵심 기술:**
@@ -20,7 +33,7 @@ graph TD
     Sensor -->|Images| RunNode[Fusion_Depth_Node]
     
     subgraph Phase 1: Setup
-    CalibNode -->|Save| ConfigFile[table_config.npz]
+    CalibNode -->|Save| ConfigFile[table_depth_fusion/config/table_config.npz]
     end
     
     subgraph Phase 2: Runtime
@@ -59,7 +72,7 @@ graph TD
 5.  **Matrix Generation:** Camera $\to$ Table 변환 행렬 $T_{4\times4}$ 생성.
 
 ### 3.4 출력 (File Save)
-* **파일명:** `config/table_config.npz`
+* **파일명:** `src/table_depth_fusion/config/table_config.npz` (workspace 기준)
 * **저장 데이터:** `crop_roi`, `intrinsics_cropped`, `T_matrix`, `safe_zone_mask`
 
 ---
@@ -72,7 +85,7 @@ graph TD
 매장 영업 시 상시 실행되어, MDE 기반의 고품질 2D/3D 데이터를 실시간 발행.
 
 ### 4.2 초기화 프로세스
-1.  `table_config.npz` 로드 및 변수 캐싱.
+1.  `src/table_depth_fusion/config/table_config.npz` 로드 및 변수 캐싱.
 2.  MDE 모델(TensorRT/PyTorch) 로드.
 3.  ROS2 Publisher 생성 (`/table/fused_depth_image`, `/table/roi_points`).
 
