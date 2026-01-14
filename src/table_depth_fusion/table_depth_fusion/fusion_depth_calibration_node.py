@@ -33,7 +33,7 @@ class FusionDepthCalibrationNode(Node):
         super().__init__("fusion_depth_calibration_node")
         self.bridge = CvBridge()
 
-        self.declare_parameter("roi_corners_2d", [])
+        self.declare_parameter("roi_corners_2d", [0.0] * 8)
         self.declare_parameter("roi_size_mm", [0.0, 0.0])
         self.declare_parameter("depth_topic", "/camera/aligned_depth_to_color/image_raw")
         self.declare_parameter("camera_info_topic", "/camera/color/camera_info")
