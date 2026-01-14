@@ -260,10 +260,19 @@ class FusionDepthNode(Node):
         std = np.array([0.229, 0.224, 0.225], dtype=np.float32)
         normalized = (rgb - mean) / std
         input_tensor = np.transpose(normalized, (2, 0, 1))[None, ...]
+        input_tensor = self._match_mde_input_rank(input_tensor)
 
-        output = self.ort_session.run(
-            [self.ort_output_name], {self.ort_input_name: input_tensor}
-        )[0]
+        try:
+            output = self.ort_session.run(
+                [self.ort_output_name], {self.ort_input_name: input_tensor}
+            )[0]
+        except Exception as exc:
+            if not self.mde_warned:
+                self.get_logger().warning(
+                    f"MDE inference failed: {exc}. Using metric depth."
+                )
+                self.mde_warned = True
+            return None
         depth = self._squeeze_depth_output(output)
         if depth is None:
             if not self.mde_warned:
@@ -282,16 +291,26 @@ class FusionDepthNode(Node):
         if self.mde_input_height > 0 and self.mde_input_width > 0:
             return self.mde_input_height, self.mde_input_width
 
-        if self.ort_input_shape and len(self.ort_input_shape) >= 4:
-            h = self.ort_input_shape[2]
-            w = self.ort_input_shape[3]
-            if isinstance(h, int) and isinstance(w, int):
-                return h, w
+        if self.ort_input_shape:
+            if len(self.ort_input_shape) >= 5:
+                h = self.ort_input_shape[3]
+                w = self.ort_input_shape[4]
+                if isinstance(h, int) and isinstance(w, int):
+                    return h, w
+            elif len(self.ort_input_shape) >= 4:
+                h = self.ort_input_shape[2]
+                w = self.ort_input_shape[3]
+                if isinstance(h, int) and isinstance(w, int):
+                    return h, w
 
         return crop_h, crop_w
 
     @staticmethod
     def _squeeze_depth_output(output: np.ndarray) -> Optional[np.ndarray]:
+        if output.ndim == 5:
+            if output.shape[2] == 1:
+                return output[0, 0, 0]
+            return output[0, 0]
         if output.ndim == 4:
             if output.shape[1] == 1:
                 return output[0, 0]
@@ -301,6 +320,20 @@ class FusionDepthNode(Node):
         if output.ndim == 2:
             return output
         return None
+
+    def _match_mde_input_rank(self, input_tensor: np.ndarray) -> np.ndarray:
+        if not self.ort_input_shape:
+            return input_tensor
+
+        expected_rank = len(self.ort_input_shape)
+        if expected_rank == input_tensor.ndim:
+            return input_tensor
+        if expected_rank == 5 and input_tensor.ndim == 4:
+            return input_tensor[:, None, ...]
+        if expected_rank == 4 and input_tensor.ndim == 5:
+            if input_tensor.shape[1] == 1:
+                return input_tensor[:, 0, ...]
+        return input_tensor
 
     def _scale_recover(self, depth_metric: np.ndarray, depth_relative: np.ndarray) -> np.ndarray:
         if depth_metric.shape != depth_relative.shape:
