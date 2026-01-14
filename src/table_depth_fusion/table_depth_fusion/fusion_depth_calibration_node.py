@@ -148,7 +148,7 @@ class FusionDepthCalibrationNode(Node):
         self.safe_zone_mask = mask & self.roi_polygon_mask
 
         self.get_logger().info(
-            "ROI prepared: x=%d y=%d w=%d h=%d", x_min, y_min, crop_width, crop_height
+            f"ROI prepared: x={x_min} y={y_min} w={crop_width} h={crop_height}"
         )
 
     def _depth_cb(self, msg: Image) -> None:
@@ -173,9 +173,7 @@ class FusionDepthCalibrationNode(Node):
         if self.frames_collected < self.num_frames:
             if self.frames_collected % 5 == 0:
                 self.get_logger().info(
-                    "Collecting depth frames: %d/%d",
-                    self.frames_collected,
-                    self.num_frames,
+                    f"Collecting depth frames: {self.frames_collected}/{self.num_frames}"
                 )
             return
 
@@ -232,7 +230,7 @@ class FusionDepthCalibrationNode(Node):
         z_pnp = float(center_cam[2, 0])
 
         if z_pnp <= 0.0:
-            self.get_logger().error("PnP returned invalid Z depth: %.3f", z_pnp)
+            self.get_logger().error(f"PnP returned invalid Z depth: {z_pnp:.3f}")
             return
 
         scale = z_real / z_pnp
@@ -255,8 +253,10 @@ class FusionDepthCalibrationNode(Node):
         )
 
         self.calibrated = True
-        self.get_logger().info("Calibration saved to %s", str(self.output_config))
-        self.get_logger().info("Z_real=%.2f, Z_pnp=%.2f, scale=%.4f", z_real, z_pnp, scale)
+        self.get_logger().info(f"Calibration saved to {self.output_config}")
+        self.get_logger().info(
+            f"Z_real={z_real:.2f}, Z_pnp={z_pnp:.2f}, scale={scale:.4f}"
+        )
 
 
 def main() -> None:

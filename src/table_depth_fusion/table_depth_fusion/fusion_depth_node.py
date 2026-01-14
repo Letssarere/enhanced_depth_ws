@@ -174,7 +174,7 @@ class FusionDepthNode(Node):
     def _init_mde_session(self) -> bool:
         model_path = self.mde_model_path
         if not model_path.exists():
-            self.get_logger().error("MDE model not found: %s", model_path)
+            self.get_logger().error(f"MDE model not found: {model_path}")
             return False
 
         self.ort_session = ort.InferenceSession(
@@ -190,9 +190,7 @@ class FusionDepthNode(Node):
         self.ort_input_shape = inputs[0].shape
         self.ort_output_name = outputs[0].name
         self.get_logger().info(
-            "MDE model loaded: %s (input shape: %s)",
-            model_path,
-            str(self.ort_input_shape),
+            f"MDE model loaded: {model_path} (input shape: {self.ort_input_shape})"
         )
         return True
 
