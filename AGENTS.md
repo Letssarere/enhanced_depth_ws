@@ -61,7 +61,9 @@ graph TD
 
 ### 3.3 핵심 알고리즘 (Hybrid PnP + Depth Correction)
 1.  **데이터 수집:** `/camera/aligned_depth_to_color/image_raw` (Depth) 30프레임 평균 사용.
-2.  **Crop & Intrinsics:** ROI 영역 Crop 및 Intrinsic($c_x, c_y$) 오프셋 보정.
+2.  **Crop & Intrinsics:** ROI 코너의 min/max로 만든 bbox에 **좌/우 +10px, 위 +10px, 아래 +30px 마진**을 적용한 Crop 영역 사용. Intrinsic($c_x, c_y$) 오프셋 보정.
+    * Crop은 **MDE 입력 + Depth Fusion**에 사용.
+    * ROI 폴리곤 마스크는 **Point Cloud** 생성에 사용.
 3.  **SolvePnP (Pose Estimation):**
     * **2D Image Points:** 사용자 입력 코너 좌표.
     * **3D World Points:** $(0,H,0), (W,H,0), (W,0,0), (0,0,0)$ 설정.
@@ -73,7 +75,7 @@ graph TD
 
 ### 3.4 출력 (File Save)
 * **파일명:** `src/table_depth_fusion/config/table_config.npz` (workspace 기준)
-* **저장 데이터:** `crop_roi`, `intrinsics_cropped`, `T_matrix`, `safe_zone_mask`
+* **저장 데이터:** `crop_roi`, `intrinsics_cropped`, `T_matrix`, `safe_zone_mask`, `roi_polygon_mask`
 
 ---
 
@@ -91,7 +93,8 @@ graph TD
 
 ### 4.3 실시간 처리 파이프라인 (Loop)
 1.  **Preprocessing:**
-    * RGB/Depth 이미지를 저장된 ROI 좌표로 Crop.
+    * RGB/Depth 이미지를 **crop_roi (마진 적용 bbox)**로 Crop.
+    * ROI 폴리곤 마스크를 로드하여 Point Cloud 대상 픽셀 정의.
 2.  **MDE Inference (Lightweight):**
     * Crop 된 RGB 입력 $\to$ Relative Depth Map 출력.
 3.  **Fusion (Scale Recovery):**
@@ -99,7 +102,7 @@ graph TD
     * **Regression:** 단순 선형 회귀 ($RealSense = s \cdot MDE + b$) $\to$ $s, b$ 파라미터 산출.
     * **Generation:** `Fused_Depth = MDE * s + b` (결측 없는 mm 단위 Depth 생성).
 4.  **3D Transformation (Vectorized):**
-    * ROI 마스크 내부 픽셀들에 대해 $P_{table} = T_{matrix} \times P_{camera}$ 연산 수행.
+    * **ROI 폴리곤 마스크 내부 픽셀들만** $P_{table} = T_{matrix} \times P_{camera}$ 연산 수행.
     * **결과:** `(N, 3)` 형태의 Point Cloud ($x, y, z$ mm 단위).
 
 ### 4.4 발행 토픽 (Outputs)

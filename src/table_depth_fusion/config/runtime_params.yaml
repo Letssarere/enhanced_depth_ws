@@ -1,0 +1,11 @@
+fusion_depth_node:
+  ros__parameters:
+    use_mde: true
+    # Relative paths are resolved against the package share directory.
+    mde_model_path: models/depth_anything_v3_small_onnx/onnx/model.onnx
+    # Use 0 to follow the model's native input size.
+    mde_input_width: 0
+    mde_input_height: 0
+    point_stride: 1
+    depth_unit_scale: 1.0
+    frame_id: table_link
