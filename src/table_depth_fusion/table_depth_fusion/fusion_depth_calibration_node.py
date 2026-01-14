@@ -12,6 +12,10 @@ from sensor_msgs.msg import CameraInfo, Image
 
 def resolve_default_config_path() -> Path:
     candidates = []
+    workspace_candidate = (
+        Path.cwd() / "src" / "table_depth_fusion" / "config" / "table_config.npz"
+    )
+    candidates.append(workspace_candidate)
     try:
         share_dir = Path(get_package_share_directory("table_depth_fusion"))
         candidates.append(share_dir / "config" / "table_config.npz")
@@ -23,7 +27,7 @@ def resolve_default_config_path() -> Path:
 
     for candidate in candidates:
         if candidate.parent.exists() and os.access(candidate.parent, os.W_OK):
-            return candidate
+        return candidate
 
     return candidates[-1]
 
@@ -41,11 +45,15 @@ class FusionDepthCalibrationNode(Node):
         self.declare_parameter("safe_zone_margin_ratio", 0.25)
         self.declare_parameter("depth_unit_scale", 1.0)
         self.declare_parameter("output_config", str(resolve_default_config_path()))
+        self.declare_parameter("exit_after_calibration", True)
 
         self.num_frames = int(self.get_parameter("num_frames").value)
         self.safe_zone_margin_ratio = float(self.get_parameter("safe_zone_margin_ratio").value)
         self.depth_unit_scale = float(self.get_parameter("depth_unit_scale").value)
         self.output_config = Path(self.get_parameter("output_config").value)
+        self.exit_after_calibration = bool(
+            self.get_parameter("exit_after_calibration").value
+        )
 
         self.roi_corners_2d = self._parse_roi_corners(
             self.get_parameter("roi_corners_2d").value
@@ -257,6 +265,9 @@ class FusionDepthCalibrationNode(Node):
         self.get_logger().info(
             f"Z_real={z_real:.2f}, Z_pnp={z_pnp:.2f}, scale={scale:.4f}"
         )
+        if self.exit_after_calibration and rclpy.ok():
+            self.get_logger().info("Calibration complete. Shutting down.")
+            rclpy.shutdown()
 
 
 def main() -> None:

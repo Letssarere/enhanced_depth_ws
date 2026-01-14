@@ -20,6 +20,10 @@ except ImportError:  # pragma: no cover - handled at runtime
 
 def resolve_default_config_path() -> Path:
     candidates = []
+    workspace_candidate = (
+        Path.cwd() / "src" / "table_depth_fusion" / "config" / "table_config.npz"
+    )
+    candidates.append(workspace_candidate)
     try:
         share_dir = Path(get_package_share_directory("table_depth_fusion"))
         candidates.append(share_dir / "config" / "table_config.npz")

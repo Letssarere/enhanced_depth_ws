@@ -7,3 +7,4 @@ fusion_depth_calibration_node:
     num_frames: 30
     safe_zone_margin_ratio: 0.25
     depth_unit_scale: 1.0
+    exit_after_calibration: true
