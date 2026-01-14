@@ -27,7 +27,7 @@ def resolve_default_config_path() -> Path:
 
     for candidate in candidates:
         if candidate.parent.exists() and os.access(candidate.parent, os.W_OK):
-        return candidate
+            return candidate
 
     return candidates[-1]
 
