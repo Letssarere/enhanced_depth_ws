@@ -258,6 +258,7 @@ class FusionDepthCalibrationNode(Node):
             T_matrix=t_matrix,
             safe_zone_mask=self.safe_zone_mask.astype(np.uint8),
             roi_polygon_mask=self.roi_polygon_mask.astype(np.uint8),
+            roi_size_m=self.roi_size_m.astype(np.float32),
         )
 
         self.calibrated = True

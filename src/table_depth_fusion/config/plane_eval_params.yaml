@@ -1,8 +1,13 @@
 table_plane_eval_node:
   ros__parameters:
     points_topic: /table/roi_points
+    # Leave empty to use config_path resolved by the node.
+    config_path: ""
     # Replace with real table ROI size in meters [width, height].
     roi_size_m: [1.652, 0.318]
+    # Optional: read roi_size_m from a YAML file when roi_size_m is not set.
+    # Example: src/table_depth_fusion/config/calibration_params.yaml
+    roi_yaml_path: ""
     warmup_sec: 2.0
     eval_duration_sec: 10.0
     min_points: 2000

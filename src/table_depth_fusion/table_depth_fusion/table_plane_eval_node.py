@@ -7,9 +7,52 @@ from typing import Dict, List, Optional
 
 import numpy as np
 import rclpy
+from ament_index_python.packages import get_package_share_directory
 from rclpy.node import Node
 from sensor_msgs.msg import PointCloud2
 from sensor_msgs_py import point_cloud2
+
+try:
+    import yaml
+except ImportError:  # pragma: no cover - handled at runtime
+    yaml = None
+
+
+def resolve_default_config_path() -> Path:
+    candidates = []
+    workspace_candidate = (
+        Path.cwd() / "src" / "table_depth_fusion" / "config" / "table_config.npz"
+    )
+    candidates.append(workspace_candidate)
+
+    package_root = Path(__file__).resolve().parents[1]
+    candidates.append(package_root / "config" / "table_config.npz")
+
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return candidates[-1]
+
+
+def resolve_default_calibration_params_path() -> Path:
+    candidates = []
+    workspace_candidate = (
+        Path.cwd() / "src" / "table_depth_fusion" / "config" / "calibration_params.yaml"
+    )
+    candidates.append(workspace_candidate)
+    try:
+        share_dir = Path(get_package_share_directory("table_depth_fusion"))
+        candidates.append(share_dir / "config" / "calibration_params.yaml")
+    except Exception:
+        pass
+
+    package_root = Path(__file__).resolve().parents[1]
+    candidates.append(package_root / "config" / "calibration_params.yaml")
+
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return candidates[-1]
 
 
 def resolve_default_output_dir() -> Path:
@@ -33,7 +76,11 @@ class TablePlaneEvalNode(Node):
     def __init__(self) -> None:
         super().__init__("table_plane_eval_node")
         self.declare_parameter("points_topic", "/table/roi_points")
+        self.declare_parameter("config_path", str(resolve_default_config_path()))
         self.declare_parameter("roi_size_m", [0.0, 0.0])
+        self.declare_parameter(
+            "roi_yaml_path", str(resolve_default_calibration_params_path())
+        )
         self.declare_parameter("warmup_sec", 2.0)
         self.declare_parameter("eval_duration_sec", 10.0)
         self.declare_parameter("min_points", 2000)
@@ -45,9 +92,17 @@ class TablePlaneEvalNode(Node):
         self.declare_parameter("method_tag", "")
         self.declare_parameter("exit_after_eval", True)
 
-        self.roi_size_m = self._parse_roi_size(
-            self.get_parameter("roi_size_m").value
+        self.config_path = self._resolve_config_path(
+            str(self.get_parameter("config_path").value)
         )
+        self.roi_yaml_path = self._resolve_optional_path(
+            str(self.get_parameter("roi_yaml_path").value)
+        )
+        self.roi_size_m = self._parse_roi_size(self.get_parameter("roi_size_m").value)
+        if self.roi_size_m is None:
+            self.roi_size_m = self._load_roi_size_from_config(self.config_path)
+        if self.roi_size_m is None:
+            self.roi_size_m = self._load_roi_size_from_yaml(self.roi_yaml_path)
         self.warmup_sec = float(self.get_parameter("warmup_sec").value)
         self.eval_duration_sec = float(self.get_parameter("eval_duration_sec").value)
         self.min_points = int(self.get_parameter("min_points").value)
@@ -76,8 +131,9 @@ class TablePlaneEvalNode(Node):
 
         self.xy_check_enabled = self.roi_size_m is not None
         if not self.xy_check_enabled:
-            self.get_logger().error(
-                "roi_size_m must be [width, height] > 0; XY checks disabled."
+            self.get_logger().warning(
+                "ROI size unavailable; XY checks disabled. "
+                "Set roi_size_m, update table_config.npz, or provide roi_yaml_path."
             )
 
         points_topic = str(self.get_parameter("points_topic").value)
@@ -95,11 +151,85 @@ class TablePlaneEvalNode(Node):
             return path
         return Path.cwd() / path
 
+    def _resolve_config_path(self, value: str) -> Path:
+        raw = value.strip()
+        if raw:
+            path = Path(raw)
+            if path.is_absolute():
+                return path
+            return Path.cwd() / path
+        return resolve_default_config_path()
+
+    def _resolve_optional_path(self, value: str) -> Optional[Path]:
+        raw = value.strip()
+        if not raw:
+            return None
+        path = Path(raw)
+        if path.is_absolute():
+            return path
+        return Path.cwd() / path
+
     def _parse_roi_size(self, value) -> Optional[np.ndarray]:
-        if isinstance(value, (list, tuple)) and len(value) == 2:
+        if isinstance(value, np.ndarray) and value.size == 2:
+            size = value.astype(np.float32, copy=False).reshape(2)
+        elif isinstance(value, (list, tuple)) and len(value) == 2:
             size = np.array(value, dtype=np.float32)
-            if size[0] > 0.0 and size[1] > 0.0:
-                return size
+        else:
+            return None
+        if size[0] > 0.0 and size[1] > 0.0:
+            return size
+        return None
+
+    def _load_roi_size_from_config(self, path: Path) -> Optional[np.ndarray]:
+        if not path.exists():
+            self.get_logger().warning(f"Config file not found: {path}")
+            return None
+        try:
+            data = np.load(path)
+        except Exception as exc:
+            self.get_logger().warning(f"Failed to read config file: {exc}")
+            return None
+        if "roi_size_m" not in data:
+            self.get_logger().warning(f"roi_size_m not found in {path}")
+            return None
+        return self._parse_roi_size(data["roi_size_m"])
+
+    def _load_roi_size_from_yaml(self, path: Optional[Path]) -> Optional[np.ndarray]:
+        if path is None:
+            return None
+        if yaml is None:
+            self.get_logger().warning("PyYAML is not available; skipping YAML lookup.")
+            return None
+        if not path.exists():
+            self.get_logger().warning(f"ROI YAML not found: {path}")
+            return None
+        try:
+            with path.open("r") as yaml_file:
+                data = yaml.safe_load(yaml_file)
+        except Exception as exc:
+            self.get_logger().warning(f"Failed to read ROI YAML: {exc}")
+            return None
+
+        roi_size = self._extract_roi_size_from_yaml(data)
+        if roi_size is None:
+            self.get_logger().warning(f"roi_size_m not found in {path}")
+        return roi_size
+
+    def _extract_roi_size_from_yaml(self, data) -> Optional[np.ndarray]:
+        if not isinstance(data, dict):
+            return None
+        node_section = data.get("fusion_depth_calibration_node")
+        if isinstance(node_section, dict):
+            params = node_section.get("ros__parameters")
+            if isinstance(params, dict) and "roi_size_m" in params:
+                return self._parse_roi_size(params["roi_size_m"])
+        for _, node_data in data.items():
+            if isinstance(node_data, dict):
+                params = node_data.get("ros__parameters")
+                if isinstance(params, dict) and "roi_size_m" in params:
+                    return self._parse_roi_size(params["roi_size_m"])
+        if "roi_size_m" in data:
+            return self._parse_roi_size(data["roi_size_m"])
         return None
 
     def _points_cb(self, msg: PointCloud2) -> None:
@@ -152,10 +282,17 @@ class TablePlaneEvalNode(Node):
         points_iter = point_cloud2.read_points(
             msg, field_names=("x", "y", "z"), skip_nans=True
         )
-        points = np.array(list(points_iter), dtype=np.float32)
-        if points.size == 0:
+        points_list = list(points_iter)
+        if not points_list:
             return np.zeros((0, 3), dtype=np.float32)
-        return points.reshape(-1, 3)
+        points = np.array(points_list)
+        if points.dtype.names is not None:
+            points = np.stack(
+                [points["x"], points["y"], points["z"]], axis=-1
+            )
+        if points.ndim == 1:
+            points = np.array(points_list, dtype=np.float32).reshape(-1, 3)
+        return points.astype(np.float32, copy=False)
 
     def _compute_metrics(self, points: np.ndarray) -> Dict[str, float]:
         metrics: Dict[str, float] = {}
