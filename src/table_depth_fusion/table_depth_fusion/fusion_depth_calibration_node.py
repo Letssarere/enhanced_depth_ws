@@ -38,7 +38,7 @@ class FusionDepthCalibrationNode(Node):
         self.bridge = CvBridge()
 
         self.declare_parameter("roi_corners_2d", [0.0] * 8)
-        self.declare_parameter("roi_size_mm", [0.0, 0.0])
+        self.declare_parameter("roi_size_m", [0.0, 0.0])
         self.declare_parameter("depth_topic", "/camera/aligned_depth_to_color/image_raw")
         self.declare_parameter("camera_info_topic", "/camera/color/camera_info")
         self.declare_parameter("num_frames", 30)
@@ -58,7 +58,7 @@ class FusionDepthCalibrationNode(Node):
         self.roi_corners_2d = self._parse_roi_corners(
             self.get_parameter("roi_corners_2d").value
         )
-        self.roi_size_mm = self._parse_roi_size(self.get_parameter("roi_size_mm").value)
+        self.roi_size_m = self._parse_roi_size(self.get_parameter("roi_size_m").value)
 
         self.camera_info = None
         self.crop_roi = None
@@ -93,7 +93,7 @@ class FusionDepthCalibrationNode(Node):
 
     def _parse_roi_size(self, value) -> np.ndarray:
         if not isinstance(value, (list, tuple)) or len(value) != 2:
-            raise ValueError("roi_size_mm must be [width_mm, height_mm]")
+            raise ValueError("roi_size_m must be [width_m, height_m]")
         return np.array(value, dtype=np.float32)
 
     def _camera_info_cb(self, msg: CameraInfo) -> None:
@@ -206,12 +206,12 @@ class FusionDepthCalibrationNode(Node):
         image_points[:, 0] -= self.crop_roi[0]
         image_points[:, 1] -= self.crop_roi[1]
 
-        width_mm, height_mm = self.roi_size_mm
+        width_m, height_m = self.roi_size_m
         object_points = np.array(
             [
-                [0.0, height_mm, 0.0],
-                [width_mm, height_mm, 0.0],
-                [width_mm, 0.0, 0.0],
+                [0.0, height_m, 0.0],
+                [width_m, height_m, 0.0],
+                [width_m, 0.0, 0.0],
                 [0.0, 0.0, 0.0],
             ],
             dtype=np.float32,
@@ -233,7 +233,7 @@ class FusionDepthCalibrationNode(Node):
             return
 
         rotation, _ = cv2.Rodrigues(rvec)
-        center_obj = np.array([[width_mm / 2.0, height_mm / 2.0, 0.0]], dtype=np.float32)
+        center_obj = np.array([[width_m / 2.0, height_m / 2.0, 0.0]], dtype=np.float32)
         center_cam = rotation @ center_obj.T + tvec
         z_pnp = float(center_cam[2, 0])
 
