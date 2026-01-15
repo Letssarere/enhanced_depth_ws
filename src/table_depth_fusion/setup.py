@@ -41,6 +41,7 @@ setup(
             'fusion_depth_calibration_node = table_depth_fusion.fusion_depth_calibration_node:main',
             'fusion_depth_node = table_depth_fusion.fusion_depth_node:main',
             'table_config_tf_node = table_depth_fusion.table_config_tf_node:main',
+            'table_plane_eval_node = table_depth_fusion.table_plane_eval_node:main',
         ],
     },
 )

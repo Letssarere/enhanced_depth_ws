@@ -1,0 +1,15 @@
+table_plane_eval_node:
+  ros__parameters:
+    points_topic: /table/roi_points
+    # Replace with real table ROI size in meters [width, height].
+    roi_size_m: [1.652, 0.318]
+    warmup_sec: 2.0
+    eval_duration_sec: 10.0
+    min_points: 2000
+    z_tol_m: 0.003
+    xy_margin_m: 0.002
+    save_csv: true
+    save_json: true
+    output_dir: logs
+    method_tag: default
+    exit_after_eval: true
