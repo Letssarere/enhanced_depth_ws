@@ -127,6 +127,8 @@ class FusionDepthNode(Node):
         self.declare_parameter("mde_input_width", 0)
         self.declare_parameter("mde_input_height", 0)
         self.declare_parameter("mde_letterbox", True)
+        self.declare_parameter("mde_full_image", True)
+        self.declare_parameter("publish_full_fused_depth", True)
 
         self.config_path = Path(self.get_parameter("config_path").value)
         self.depth_unit_scale = float(self.get_parameter("depth_unit_scale").value)
@@ -139,6 +141,10 @@ class FusionDepthNode(Node):
         self.mde_input_width = int(self.get_parameter("mde_input_width").value)
         self.mde_input_height = int(self.get_parameter("mde_input_height").value)
         self.mde_letterbox = bool(self.get_parameter("mde_letterbox").value)
+        self.mde_full_image = bool(self.get_parameter("mde_full_image").value)
+        self.publish_full_fused_depth = bool(
+            self.get_parameter("publish_full_fused_depth").value
+        )
         self.mde_model_path = self._resolve_model_path(
             self.get_parameter("mde_model_path").value
         )
@@ -587,14 +593,40 @@ class FusionDepthNode(Node):
         x_min, y_min, crop_w, crop_h = self.crop_roi
         depth_crop = depth[y_min : y_min + crop_h, x_min : x_min + crop_w]
 
-        fused_depth = depth_crop
+        fused_depth_full = depth
+        fused_depth_roi = depth_crop
         if self.use_mde:
-            mde_depth = self._infer_mde(color_msg, x_min, y_min, crop_w, crop_h)
-            if mde_depth is not None:
-                fused_depth = self._scale_recover(depth_crop, mde_depth)
+            if self.mde_full_image:
+                full_h, full_w = depth.shape[:2]
+                mde_full = self._infer_mde(color_msg, 0, 0, full_w, full_h)
+                if mde_full is not None and mde_full.shape == depth.shape:
+                    mde_crop = mde_full[
+                        y_min : y_min + crop_h, x_min : x_min + crop_w
+                    ]
+                    params = self._compute_scale_recovery_params(
+                        depth_crop, mde_crop
+                    )
+                    if params is not None:
+                        scale, bias = params
+                        fused_depth_full = mde_full * scale + bias
+                    fused_depth_roi = fused_depth_full[
+                        y_min : y_min + crop_h, x_min : x_min + crop_w
+                    ]
+                else:
+                    if mde_full is not None:
+                        self.get_logger().warning(
+                            "Full MDE output shape mismatch; using metric depth."
+                        )
+            else:
+                mde_depth = self._infer_mde(color_msg, x_min, y_min, crop_w, crop_h)
+                if mde_depth is not None:
+                    fused_depth_roi = self._scale_recover(depth_crop, mde_depth)
 
-        self._publish_fused_depth(fused_depth, depth_msg)
-        self._publish_point_cloud(fused_depth, depth_msg.header.stamp)
+        fused_to_publish = (
+            fused_depth_full if self.publish_full_fused_depth else fused_depth_roi
+        )
+        self._publish_fused_depth(fused_to_publish, depth_msg)
+        self._publish_point_cloud(fused_depth_roi, depth_msg.header.stamp)
 
     def _depth_only_cb(self, depth_msg: Image) -> None:
         depth = self.bridge.imgmsg_to_cv2(depth_msg, desired_encoding="passthrough")
@@ -603,7 +635,8 @@ class FusionDepthNode(Node):
         x_min, y_min, crop_w, crop_h = self.crop_roi
         depth_crop = depth[y_min : y_min + crop_h, x_min : x_min + crop_w]
 
-        self._publish_fused_depth(depth_crop, depth_msg)
+        fused_to_publish = depth if self.publish_full_fused_depth else depth_crop
+        self._publish_fused_depth(fused_to_publish, depth_msg)
         self._publish_point_cloud(depth_crop, depth_msg.header.stamp)
 
     def _infer_mde(
@@ -759,15 +792,17 @@ class FusionDepthNode(Node):
                 return input_tensor[:, 0, ...]
         return input_tensor
 
-    def _scale_recover(self, depth_metric: np.ndarray, depth_relative: np.ndarray) -> np.ndarray:
+    def _compute_scale_recovery_params(
+        self, depth_metric: np.ndarray, depth_relative: np.ndarray
+    ) -> Optional[Tuple[float, float]]:
         if depth_metric.shape != depth_relative.shape:
             self.get_logger().warning("MDE output shape mismatch; using metric depth.")
-            return depth_metric
+            return None
 
         safe_mask = self.safe_zone_mask
         if safe_mask.shape != depth_metric.shape:
             self.get_logger().warning("Safe zone mask mismatch; using metric depth.")
-            return depth_metric
+            return None
 
         valid = (
             safe_mask
@@ -781,15 +816,22 @@ class FusionDepthNode(Node):
         if sample_count < self.safe_zone_min_points:
             self.get_logger().warning("Insufficient samples for scale recovery.")
             if sample_count == 0:
-                return depth_metric
+                return None
             median_mde = float(np.median(mde_vals))
             if abs(median_mde) < 1e-6:
-                return depth_metric
+                return None
             scale = float(np.median(real_vals)) / median_mde
-            return depth_relative * scale
+            return scale, 0.0
         design = np.column_stack([mde_vals, np.ones_like(mde_vals)])
         solution, _, _, _ = np.linalg.lstsq(design, real_vals, rcond=None)
         scale, bias = solution
+        return float(scale), float(bias)
+
+    def _scale_recover(self, depth_metric: np.ndarray, depth_relative: np.ndarray) -> np.ndarray:
+        params = self._compute_scale_recovery_params(depth_metric, depth_relative)
+        if params is None:
+            return depth_metric
+        scale, bias = params
         return depth_relative * scale + bias
 
     def _publish_fused_depth(self, fused_depth: np.ndarray, depth_msg: Image) -> None:

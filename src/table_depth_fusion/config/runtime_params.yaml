@@ -9,6 +9,8 @@ fusion_depth_node:
     mde_input_width: 576
     mde_input_height: 128
     mde_letterbox: true
+    mde_full_image: true
+    publish_full_fused_depth: true
     point_stride: 1
     depth_unit_scale: 0.001
     frame_id: table_link
