@@ -14,6 +14,7 @@ setup(
             ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
         ('share/' + package_name + '/launch', glob('launch/*.py')),
+        ('share/' + package_name + '/rviz', glob('rviz/*.rviz')),
         ('share/' + package_name + '/config', glob('config/*.npz') + glob('config/*.yaml')),
         (
             'share/' + package_name + '/models/depth_anything_v3_small',
@@ -39,6 +40,7 @@ setup(
         'console_scripts': [
             'fusion_depth_calibration_node = table_depth_fusion.fusion_depth_calibration_node:main',
             'fusion_depth_node = table_depth_fusion.fusion_depth_node:main',
+            'table_config_tf_node = table_depth_fusion.table_config_tf_node:main',
         ],
     },
 )

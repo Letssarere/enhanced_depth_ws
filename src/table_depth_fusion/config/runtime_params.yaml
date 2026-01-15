@@ -10,5 +10,5 @@ fusion_depth_node:
     mde_input_height: 128
     mde_letterbox: true
     point_stride: 1
-    depth_unit_scale: 1.0
+    depth_unit_scale: 0.001
     frame_id: table_link
