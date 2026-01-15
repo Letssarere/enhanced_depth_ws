@@ -1,11 +1,14 @@
 fusion_depth_node:
   ros__parameters:
     use_mde: true
+    mde_backend: tensorrt
     # Relative paths are resolved against the package share directory.
-    mde_model_path: models/depth_anything_v3_small_onnx/onnx/model.onnx
-    # Use 0 to follow the model's native input size.
-    mde_input_width: 0
-    mde_input_height: 0
+    mde_model_path: models/depth_anything_v3_small/onnx/model.onnx
+    mde_engine_path: models/depth_anything_v3_small/tensorrt/model_fp16.engine
+    # Fixed MDE input size (letterbox with aspect ratio preserved).
+    mde_input_width: 576
+    mde_input_height: 128
+    mde_letterbox: true
     point_stride: 1
     depth_unit_scale: 1.0
     frame_id: table_link

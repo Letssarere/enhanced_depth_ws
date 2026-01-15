@@ -3,6 +3,8 @@ from setuptools import setup
 
 package_name = 'table_depth_fusion'
 
+trt_files = glob('models/depth_anything_v3_small/tensorrt/*')
+
 setup(
     name=package_name,
     version='0.0.0',
@@ -14,12 +16,16 @@ setup(
         ('share/' + package_name + '/launch', glob('launch/*.py')),
         ('share/' + package_name + '/config', glob('config/*.npz') + glob('config/*.yaml')),
         (
-            'share/' + package_name + '/models/depth_anything_v3_small_onnx',
-            ['models/depth_anything_v3_small_onnx/config.json'],
+            'share/' + package_name + '/models/depth_anything_v3_small',
+            ['models/depth_anything_v3_small/config.json'],
         ),
         (
-            'share/' + package_name + '/models/depth_anything_v3_small_onnx/onnx',
-            glob('models/depth_anything_v3_small_onnx/onnx/*'),
+            'share/' + package_name + '/models/depth_anything_v3_small/onnx',
+            glob('models/depth_anything_v3_small/onnx/*'),
+        ),
+        (
+            'share/' + package_name + '/models/depth_anything_v3_small/tensorrt',
+            trt_files,
         ),
     ],
     install_requires=['setuptools'],

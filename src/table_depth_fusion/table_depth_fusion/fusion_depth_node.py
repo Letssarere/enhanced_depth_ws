@@ -17,6 +17,17 @@ try:
 except ImportError:  # pragma: no cover - handled at runtime
     ort = None
 
+try:
+    import tensorrt as trt
+except ImportError:  # pragma: no cover - handled at runtime
+    trt = None
+
+try:
+    import pycuda.driver as cuda
+    import pycuda.autoinit  # noqa: F401
+except ImportError:  # pragma: no cover - handled at runtime
+    cuda = None
+
 
 def resolve_default_config_path() -> Path:
     candidates = []
@@ -46,7 +57,7 @@ def resolve_default_model_path() -> Path:
         candidates.append(
             share_dir
             / "models"
-            / "depth_anything_v3_small_onnx"
+            / "depth_anything_v3_small"
             / "onnx"
             / "model.onnx"
         )
@@ -57,9 +68,38 @@ def resolve_default_model_path() -> Path:
     candidates.append(
         package_root
         / "models"
-        / "depth_anything_v3_small_onnx"
+        / "depth_anything_v3_small"
         / "onnx"
         / "model.onnx"
+    )
+
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return candidates[-1]
+
+
+def resolve_default_engine_path() -> Path:
+    candidates = []
+    try:
+        share_dir = Path(get_package_share_directory("table_depth_fusion"))
+        candidates.append(
+            share_dir
+            / "models"
+            / "depth_anything_v3_small"
+            / "tensorrt"
+            / "model_fp16.engine"
+        )
+    except Exception:
+        pass
+
+    package_root = Path(__file__).resolve().parents[1]
+    candidates.append(
+        package_root
+        / "models"
+        / "depth_anything_v3_small"
+        / "tensorrt"
+        / "model_fp16.engine"
     )
 
     for candidate in candidates:
@@ -81,9 +121,12 @@ class FusionDepthNode(Node):
         self.declare_parameter("point_stride", 1)
         self.declare_parameter("safe_zone_min_points", 50)
         self.declare_parameter("use_mde", False)
+        self.declare_parameter("mde_backend", "onnxruntime")
         self.declare_parameter("mde_model_path", "")
+        self.declare_parameter("mde_engine_path", "")
         self.declare_parameter("mde_input_width", 0)
         self.declare_parameter("mde_input_height", 0)
+        self.declare_parameter("mde_letterbox", True)
 
         self.config_path = Path(self.get_parameter("config_path").value)
         self.depth_unit_scale = float(self.get_parameter("depth_unit_scale").value)
@@ -91,16 +134,38 @@ class FusionDepthNode(Node):
         self.point_stride = max(1, int(self.get_parameter("point_stride").value))
         self.safe_zone_min_points = int(self.get_parameter("safe_zone_min_points").value)
         self.use_mde = bool(self.get_parameter("use_mde").value)
+        self.mde_backend = str(self.get_parameter("mde_backend").value).lower()
         self.mde_warned = False
         self.mde_input_width = int(self.get_parameter("mde_input_width").value)
         self.mde_input_height = int(self.get_parameter("mde_input_height").value)
+        self.mde_letterbox = bool(self.get_parameter("mde_letterbox").value)
         self.mde_model_path = self._resolve_model_path(
             self.get_parameter("mde_model_path").value
+        )
+        self.mde_engine_path = self._resolve_engine_path(
+            self.get_parameter("mde_engine_path").value
         )
         self.ort_session = None
         self.ort_input_name = None
         self.ort_output_name = None
         self.ort_input_shape = None
+        self.trt_engine = None
+        self.trt_context = None
+        self.trt_input_index = None
+        self.trt_output_index = None
+        self.trt_output_indices = []
+        self.trt_input_shape = None
+        self.trt_output_shape = None
+        self.trt_output_shapes = {}
+        self.trt_input_dtype = None
+        self.trt_output_dtype = None
+        self.trt_output_dtypes = {}
+        self.trt_input_device = None
+        self.trt_output_devices = {}
+        self.trt_input_host = None
+        self.trt_output_host = None
+        self.trt_bindings = None
+        self.trt_stream = None
 
         self._load_config()
         self._prepare_grids()
@@ -109,15 +174,37 @@ class FusionDepthNode(Node):
         self.points_pub = self.create_publisher(PointCloud2, "/table/roi_points", 10)
 
         depth_topic = self.get_parameter("depth_topic").value
+        if self.mde_backend not in ("onnxruntime", "tensorrt"):
+            self.get_logger().warning(
+                f"Unknown mde_backend '{self.mde_backend}', using onnxruntime."
+            )
+            self.mde_backend = "onnxruntime"
         if self.use_mde:
-            if ort is None:
-                self.get_logger().error(
-                    "onnxruntime is not available; disabling MDE inference."
-                )
-                self.use_mde = False
+            if self.mde_backend == "tensorrt":
+                if not self._init_trt_engine():
+                    if ort is None:
+                        self.get_logger().error(
+                            "TensorRT init failed and onnxruntime unavailable; "
+                            "disabling MDE inference."
+                        )
+                        self.use_mde = False
+                    else:
+                        if self._init_mde_session():
+                            self.mde_backend = "onnxruntime"
+                            self.get_logger().warning(
+                                "Falling back to onnxruntime for MDE."
+                            )
+                        else:
+                            self.use_mde = False
             else:
-                if not self._init_mde_session():
+                if ort is None:
+                    self.get_logger().error(
+                        "onnxruntime is not available; disabling MDE inference."
+                    )
                     self.use_mde = False
+                else:
+                    if not self._init_mde_session():
+                        self.use_mde = False
 
         if self.use_mde:
             color_topic = self.get_parameter("color_topic").value
@@ -175,6 +262,25 @@ class FusionDepthNode(Node):
             return path
         return resolve_default_model_path()
 
+    def _resolve_engine_path(self, raw_path: str) -> Path:
+        if raw_path:
+            path = Path(raw_path)
+            if not path.is_absolute():
+                try:
+                    share_dir = Path(get_package_share_directory("table_depth_fusion"))
+                    share_candidate = share_dir / path
+                    if share_candidate.exists():
+                        return share_candidate
+                except Exception:
+                    pass
+
+                package_root = Path(__file__).resolve().parents[1]
+                root_candidate = package_root / path
+                if root_candidate.exists():
+                    return root_candidate
+            return path
+        return resolve_default_engine_path()
+
     def _init_mde_session(self) -> bool:
         model_path = self.mde_model_path
         if not model_path.exists():
@@ -192,11 +298,271 @@ class FusionDepthNode(Node):
 
         self.ort_input_name = inputs[0].name
         self.ort_input_shape = inputs[0].shape
-        self.ort_output_name = outputs[0].name
+        self.ort_output_name = self._select_ort_output_name(outputs)
         self.get_logger().info(
             f"MDE model loaded: {model_path} (input shape: {self.ort_input_shape})"
         )
         return True
+
+    @staticmethod
+    def _select_ort_output_name(outputs) -> str:
+        for output in outputs:
+            if "predicted_depth" in output.name:
+                return output.name
+        return outputs[0].name
+
+    def _init_trt_engine(self) -> bool:
+        if trt is None or cuda is None:
+            self.get_logger().error(
+                "TensorRT or pycuda not available; cannot use TensorRT backend."
+            )
+            return False
+
+        engine_path = self.mde_engine_path
+        if not engine_path.exists():
+            self.get_logger().error(f"TensorRT engine not found: {engine_path}")
+            if self.mde_input_height > 0 and self.mde_input_width > 0:
+                self.get_logger().info(
+                    "Generate with: trtexec --onnx <model.onnx> "
+                    f"--saveEngine {engine_path} "
+                    f"--minShapes pixel_values:1x1x3x{self.mde_input_height}x"
+                    f"{self.mde_input_width} "
+                    f"--optShapes pixel_values:1x1x3x{self.mde_input_height}x"
+                    f"{self.mde_input_width} "
+                    f"--maxShapes pixel_values:1x1x3x{self.mde_input_height}x"
+                    f"{self.mde_input_width} --fp16"
+                )
+            return False
+
+        logger = trt.Logger(trt.Logger.WARNING)
+        with open(engine_path, "rb") as f, trt.Runtime(logger) as runtime:
+            engine = runtime.deserialize_cuda_engine(f.read())
+
+        if engine is None:
+            self.get_logger().error("Failed to deserialize TensorRT engine.")
+            return False
+
+        context = engine.create_execution_context()
+        if context is None:
+            self.get_logger().error("Failed to create TensorRT execution context.")
+            return False
+
+        input_indices = []
+        output_indices = []
+        for idx in range(engine.num_bindings):
+            if engine.binding_is_input(idx):
+                input_indices.append(idx)
+            else:
+                output_indices.append(idx)
+
+        if not input_indices or not output_indices:
+            self.get_logger().error("TensorRT engine bindings are invalid.")
+            return False
+        if len(input_indices) > 1:
+            self.get_logger().warning(
+                "TensorRT engine has multiple inputs; using the first input."
+            )
+
+        input_index = input_indices[0]
+        output_index = self._select_trt_output_index(engine, output_indices)
+
+        input_shape = engine.get_binding_shape(input_index)
+        if engine.has_implicit_batch_dimension:
+            input_shape = (engine.max_batch_size,) + tuple(input_shape)
+
+        if any(dim < 0 for dim in input_shape):
+            resolved = self._resolve_trt_input_shape(input_shape)
+            if resolved is None:
+                self.get_logger().error(
+                    "TensorRT input shape is dynamic; set mde_input_width/height."
+                )
+                return False
+            if not context.set_binding_shape(input_index, resolved):
+                self.get_logger().error("Failed to set TensorRT binding shape.")
+                return False
+            input_shape = resolved
+
+        output_shapes = {}
+        output_dtypes = {}
+        for idx in output_indices:
+            shape = context.get_binding_shape(idx)
+            if any(dim < 0 for dim in shape):
+                self.get_logger().error("TensorRT output shape could not be resolved.")
+                return False
+            output_shapes[idx] = tuple(int(dim) for dim in shape)
+            output_dtypes[idx] = trt.nptype(engine.get_binding_dtype(idx))
+
+        self.trt_engine = engine
+        self.trt_context = context
+        self.trt_input_index = input_index
+        self.trt_output_index = output_index
+        self.trt_output_indices = output_indices
+        self.trt_input_shape = tuple(int(dim) for dim in input_shape)
+        self.trt_output_shapes = output_shapes
+        self.trt_output_shape = output_shapes[output_index]
+        self.trt_input_dtype = trt.nptype(engine.get_binding_dtype(input_index))
+        self.trt_output_dtype = output_dtypes[output_index]
+        self.trt_output_dtypes = output_dtypes
+        self.trt_bindings = [None] * engine.num_bindings
+        self.trt_stream = cuda.Stream()
+
+        if not self._allocate_trt_buffers(self.trt_input_shape):
+            return False
+
+        self.get_logger().info(f"TensorRT engine loaded: {engine_path}")
+        return True
+
+    @staticmethod
+    def _select_trt_output_index(engine, output_indices) -> int:
+        for idx in output_indices:
+            name = engine.get_binding_name(idx)
+            if "predicted_depth" in name:
+                return idx
+        return output_indices[0]
+
+    def _allocate_trt_buffers(self, input_shape: Tuple[int, ...]) -> bool:
+        if self.trt_engine is None:
+            return False
+
+        if self.trt_context is None:
+            return False
+
+        if input_shape != self.trt_input_shape:
+            if not self.trt_context.set_binding_shape(self.trt_input_index, input_shape):
+                self.get_logger().error("Failed to update TensorRT binding shape.")
+                return False
+            self.trt_input_shape = tuple(int(dim) for dim in input_shape)
+            self.trt_output_shapes = {
+                idx: tuple(
+                    int(dim) for dim in self.trt_context.get_binding_shape(idx)
+                )
+                for idx in self.trt_output_indices
+            }
+            self.trt_output_shape = self.trt_output_shapes[self.trt_output_index]
+
+        output_shape = self.trt_output_shape
+        if output_shape is None:
+            return False
+
+        input_size = int(trt.volume(self.trt_input_shape))
+        self.trt_input_host = cuda.pagelocked_empty(input_size, self.trt_input_dtype)
+        self.trt_input_device = cuda.mem_alloc(self.trt_input_host.nbytes)
+        self.trt_bindings[self.trt_input_index] = int(self.trt_input_device)
+
+        self.trt_output_devices = {}
+        self.trt_output_host = None
+        for idx in self.trt_output_indices:
+            shape = self.trt_output_shapes.get(idx)
+            if shape is None:
+                self.get_logger().error("TensorRT output shape missing.")
+                return False
+            size = int(trt.volume(shape))
+            dtype = self.trt_output_dtypes.get(idx, self.trt_output_dtype)
+            device = cuda.mem_alloc(size * np.dtype(dtype).itemsize)
+            self.trt_output_devices[idx] = device
+            self.trt_bindings[idx] = int(device)
+            if idx == self.trt_output_index:
+                self.trt_output_dtype = dtype
+                self.trt_output_shape = shape
+                self.trt_output_host = cuda.pagelocked_empty(size, dtype)
+        return True
+
+    def _resolve_trt_input_shape(
+        self, input_shape: Tuple[int, ...]
+    ) -> Optional[Tuple[int, ...]]:
+        if self.mde_input_height <= 0 or self.mde_input_width <= 0:
+            return None
+
+        dims = list(input_shape)
+        if len(dims) == 5:
+            dims[0] = dims[0] if dims[0] > 0 else 1
+            dims[1] = dims[1] if dims[1] > 0 else 1
+            dims[2] = dims[2] if dims[2] > 0 else 3
+            dims[3] = self.mde_input_height
+            dims[4] = self.mde_input_width
+        elif len(dims) == 4:
+            dims[0] = dims[0] if dims[0] > 0 else 1
+            dims[1] = dims[1] if dims[1] > 0 else 3
+            dims[2] = self.mde_input_height
+            dims[3] = self.mde_input_width
+        else:
+            return None
+        return tuple(int(dim) for dim in dims)
+
+    def _prepare_mde_input(
+        self, color_msg: Image, x_min: int, y_min: int, crop_w: int, crop_h: int
+    ) -> Tuple[np.ndarray, dict]:
+        color = self.bridge.imgmsg_to_cv2(color_msg, desired_encoding="bgr8")
+        crop = color[y_min : y_min + crop_h, x_min : x_min + crop_w]
+
+        input_h, input_w = self._resolve_mde_input_size(crop_h, crop_w)
+        if self.mde_letterbox:
+            resized, meta = self._letterbox_image(crop, input_w, input_h)
+        else:
+            resized = cv2.resize(crop, (input_w, input_h), interpolation=cv2.INTER_CUBIC)
+            meta = {
+                "pad_left": 0,
+                "pad_top": 0,
+                "new_w": input_w,
+                "new_h": input_h,
+            }
+        meta["input_w"] = input_w
+        meta["input_h"] = input_h
+
+        rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
+        mean = np.array([0.485, 0.456, 0.406], dtype=np.float32)
+        std = np.array([0.229, 0.224, 0.225], dtype=np.float32)
+        normalized = (rgb - mean) / std
+        input_tensor = np.transpose(normalized, (2, 0, 1))[None, ...]
+        return input_tensor, meta
+
+    @staticmethod
+    def _letterbox_image(
+        image: np.ndarray, target_w: int, target_h: int
+    ) -> Tuple[np.ndarray, dict]:
+        src_h, src_w = image.shape[:2]
+        scale = min(target_w / src_w, target_h / src_h)
+        new_w = int(round(src_w * scale))
+        new_h = int(round(src_h * scale))
+        resized = cv2.resize(image, (new_w, new_h), interpolation=cv2.INTER_CUBIC)
+
+        pad_w = target_w - new_w
+        pad_h = target_h - new_h
+        pad_left = pad_w // 2
+        pad_right = pad_w - pad_left
+        pad_top = pad_h // 2
+        pad_bottom = pad_h - pad_top
+
+        padded = cv2.copyMakeBorder(
+            resized,
+            pad_top,
+            pad_bottom,
+            pad_left,
+            pad_right,
+            cv2.BORDER_CONSTANT,
+            value=(0, 0, 0),
+        )
+        meta = {"pad_left": pad_left, "pad_top": pad_top, "new_w": new_w, "new_h": new_h}
+        return padded, meta
+
+    @staticmethod
+    def _postprocess_mde_output(
+        depth: np.ndarray, meta: dict, crop_w: int, crop_h: int
+    ) -> np.ndarray:
+        depth = depth.astype(np.float32)
+        pad_left = meta.get("pad_left", 0)
+        pad_top = meta.get("pad_top", 0)
+        new_w = meta.get("new_w", depth.shape[1])
+        new_h = meta.get("new_h", depth.shape[0])
+        input_w = meta.get("input_w", depth.shape[1])
+        input_h = meta.get("input_h", depth.shape[0])
+        if depth.shape != (input_h, input_w):
+            depth = cv2.resize(depth, (input_w, input_h), interpolation=cv2.INTER_CUBIC)
+        if pad_left or pad_top or new_w != depth.shape[1] or new_h != depth.shape[0]:
+            depth = depth[pad_top : pad_top + new_h, pad_left : pad_left + new_w]
+        if depth.shape != (crop_h, crop_w):
+            depth = cv2.resize(depth, (crop_w, crop_h), interpolation=cv2.INTER_CUBIC)
+        return depth
 
     def _prepare_grids(self) -> None:
         _, _, width, height = self.crop_roi
@@ -243,23 +609,19 @@ class FusionDepthNode(Node):
     def _infer_mde(
         self, color_msg: Image, x_min: int, y_min: int, crop_w: int, crop_h: int
     ) -> Optional[np.ndarray]:
+        if self.mde_backend == "tensorrt":
+            return self._infer_mde_trt(color_msg, x_min, y_min, crop_w, crop_h)
+        return self._infer_mde_onnx(color_msg, x_min, y_min, crop_w, crop_h)
+
+    def _infer_mde_onnx(
+        self, color_msg: Image, x_min: int, y_min: int, crop_w: int, crop_h: int
+    ) -> Optional[np.ndarray]:
         if self.ort_session is None:
             return None
 
-        color = self.bridge.imgmsg_to_cv2(color_msg, desired_encoding="bgr8")
-        crop = color[y_min : y_min + crop_h, x_min : x_min + crop_w]
-
-        input_h, input_w = self._resolve_mde_input_size(crop_h, crop_w)
-        if (input_h, input_w) != (crop_h, crop_w):
-            resized = cv2.resize(crop, (input_w, input_h), interpolation=cv2.INTER_CUBIC)
-        else:
-            resized = crop
-
-        rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
-        mean = np.array([0.485, 0.456, 0.406], dtype=np.float32)
-        std = np.array([0.229, 0.224, 0.225], dtype=np.float32)
-        normalized = (rgb - mean) / std
-        input_tensor = np.transpose(normalized, (2, 0, 1))[None, ...]
+        input_tensor, meta = self._prepare_mde_input(
+            color_msg, x_min, y_min, crop_w, crop_h
+        )
         input_tensor = self._match_mde_input_rank(input_tensor)
 
         try:
@@ -282,14 +644,62 @@ class FusionDepthNode(Node):
                 self.mde_warned = True
             return None
 
-        depth = depth.astype(np.float32)
-        if depth.shape != (crop_h, crop_w):
-            depth = cv2.resize(depth, (crop_w, crop_h), interpolation=cv2.INTER_CUBIC)
-        return depth
+        return self._postprocess_mde_output(depth, meta, crop_w, crop_h)
+
+    def _infer_mde_trt(
+        self, color_msg: Image, x_min: int, y_min: int, crop_w: int, crop_h: int
+    ) -> Optional[np.ndarray]:
+        if self.trt_context is None:
+            return None
+
+        input_tensor, meta = self._prepare_mde_input(
+            color_msg, x_min, y_min, crop_w, crop_h
+        )
+        input_tensor = self._match_trt_input_rank(input_tensor)
+        input_tensor = np.ascontiguousarray(input_tensor, dtype=self.trt_input_dtype)
+
+        if self.trt_input_host is None or input_tensor.size != self.trt_input_host.size:
+            if not self._allocate_trt_buffers(input_tensor.shape):
+                return None
+
+        np.copyto(self.trt_input_host, input_tensor.ravel())
+        cuda.memcpy_htod_async(
+            self.trt_input_device, self.trt_input_host, self.trt_stream
+        )
+        self.trt_context.execute_async_v2(
+            bindings=self.trt_bindings, stream_handle=self.trt_stream.handle
+        )
+        output_device = self.trt_output_devices.get(self.trt_output_index)
+        output_host = self.trt_output_host
+        if output_device is None or output_host is None:
+            self.get_logger().error("TensorRT output buffer not initialized.")
+            return None
+        cuda.memcpy_dtoh_async(output_host, output_device, self.trt_stream)
+        self.trt_stream.synchronize()
+
+        output = np.array(output_host, dtype=self.trt_output_dtype).reshape(
+            self.trt_output_shape
+        )
+        depth = self._squeeze_depth_output(output)
+        if depth is None:
+            if not self.mde_warned:
+                self.get_logger().warning(
+                    "Unexpected MDE output shape from TensorRT; skipping MDE fusion."
+                )
+                self.mde_warned = True
+            return None
+
+        return self._postprocess_mde_output(depth, meta, crop_w, crop_h)
 
     def _resolve_mde_input_size(self, crop_h: int, crop_w: int) -> Tuple[int, int]:
         if self.mde_input_height > 0 and self.mde_input_width > 0:
             return self.mde_input_height, self.mde_input_width
+
+        if self.mde_backend == "tensorrt" and self.trt_input_shape:
+            if len(self.trt_input_shape) >= 5:
+                return self.trt_input_shape[3], self.trt_input_shape[4]
+            if len(self.trt_input_shape) >= 4:
+                return self.trt_input_shape[2], self.trt_input_shape[3]
 
         if self.ort_input_shape:
             if len(self.ort_input_shape) >= 5:
@@ -326,6 +736,20 @@ class FusionDepthNode(Node):
             return input_tensor
 
         expected_rank = len(self.ort_input_shape)
+        if expected_rank == input_tensor.ndim:
+            return input_tensor
+        if expected_rank == 5 and input_tensor.ndim == 4:
+            return input_tensor[:, None, ...]
+        if expected_rank == 4 and input_tensor.ndim == 5:
+            if input_tensor.shape[1] == 1:
+                return input_tensor[:, 0, ...]
+        return input_tensor
+
+    def _match_trt_input_rank(self, input_tensor: np.ndarray) -> np.ndarray:
+        if not self.trt_input_shape:
+            return input_tensor
+
+        expected_rank = len(self.trt_input_shape)
         if expected_rank == input_tensor.ndim:
             return input_tensor
         if expected_rank == 5 and input_tensor.ndim == 4:

@@ -1,7 +1,0 @@
-{
-  "model_type": "depth_anything",
-  "transformers.js_config": {
-    "dtype": "fp32",
-    "use_external_data_format": true
-  }
-}
