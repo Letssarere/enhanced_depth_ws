@@ -9,6 +9,12 @@ fusion_depth_node:
     mde_input_width: 576
     mde_input_height: 128
     mde_letterbox: true
+    spike_median_ksize: 3
+    spike_thresh_m: 0.03
+    mde_residual_thresh_m: 0.05
+    edge_smooth_d: 5
+    edge_smooth_sigma_color: 0.02
+    edge_smooth_sigma_space: 5.0
     point_stride: 1
     depth_unit_scale: 0.001
     frame_id: table_link

@@ -127,6 +127,12 @@ class FusionDepthNode(Node):
         self.declare_parameter("mde_input_width", 0)
         self.declare_parameter("mde_input_height", 0)
         self.declare_parameter("mde_letterbox", True)
+        self.declare_parameter("spike_median_ksize", 3)
+        self.declare_parameter("spike_thresh_m", 0.03)
+        self.declare_parameter("mde_residual_thresh_m", 0.05)
+        self.declare_parameter("edge_smooth_d", 5)
+        self.declare_parameter("edge_smooth_sigma_color", 0.02)
+        self.declare_parameter("edge_smooth_sigma_space", 5.0)
 
         self.config_path = Path(self.get_parameter("config_path").value)
         self.depth_unit_scale = float(self.get_parameter("depth_unit_scale").value)
@@ -139,6 +145,22 @@ class FusionDepthNode(Node):
         self.mde_input_width = int(self.get_parameter("mde_input_width").value)
         self.mde_input_height = int(self.get_parameter("mde_input_height").value)
         self.mde_letterbox = bool(self.get_parameter("mde_letterbox").value)
+        self.spike_median_ksize = int(self.get_parameter("spike_median_ksize").value)
+        if self.spike_median_ksize < 3:
+            self.spike_median_ksize = 3
+        if self.spike_median_ksize % 2 == 0:
+            self.spike_median_ksize += 1
+        self.spike_thresh_m = float(self.get_parameter("spike_thresh_m").value)
+        self.mde_residual_thresh_m = float(
+            self.get_parameter("mde_residual_thresh_m").value
+        )
+        self.edge_smooth_d = int(self.get_parameter("edge_smooth_d").value)
+        self.edge_smooth_sigma_color = float(
+            self.get_parameter("edge_smooth_sigma_color").value
+        )
+        self.edge_smooth_sigma_space = float(
+            self.get_parameter("edge_smooth_sigma_space").value
+        )
         self.mde_model_path = self._resolve_model_path(
             self.get_parameter("mde_model_path").value
         )
@@ -591,7 +613,9 @@ class FusionDepthNode(Node):
         if self.use_mde:
             mde_depth = self._infer_mde(color_msg, x_min, y_min, crop_w, crop_h)
             if mde_depth is not None:
-                fused_depth = self._scale_recover(depth_crop, mde_depth)
+                mde_metric = self._scale_recover(depth_crop, mde_depth)
+                fused_depth = self._rs_first_fusion(depth_crop, mde_metric)
+                fused_depth = self._edge_aware_smooth(fused_depth)
 
         self._publish_fused_depth(fused_depth, depth_msg)
         self._publish_point_cloud(fused_depth, depth_msg.header.stamp)
@@ -791,6 +815,47 @@ class FusionDepthNode(Node):
         solution, _, _, _ = np.linalg.lstsq(design, real_vals, rcond=None)
         scale, bias = solution
         return depth_relative * scale + bias
+
+    def _rs_first_fusion(
+        self, depth_metric: np.ndarray, mde_metric: np.ndarray
+    ) -> np.ndarray:
+        valid = (
+            np.isfinite(depth_metric)
+            & (depth_metric > 0.0)
+            & np.isfinite(mde_metric)
+        )
+        depth_for_median = depth_metric.astype(np.float32)
+        depth_for_median[~np.isfinite(depth_for_median)] = 0.0
+        median = cv2.medianBlur(depth_for_median, self.spike_median_ksize)
+        spike = valid & (np.abs(depth_metric - median) > self.spike_thresh_m)
+        residual = valid & (
+            np.abs(depth_metric - mde_metric) > self.mde_residual_thresh_m
+        )
+        hole = ~np.isfinite(depth_metric) | (depth_metric <= 0.0)
+        replace = (
+            (hole | spike | residual)
+            & np.isfinite(mde_metric)
+            & (mde_metric > 0.0)
+        )
+        fused = depth_metric.copy()
+        fused[replace] = mde_metric[replace]
+        return fused
+
+    def _edge_aware_smooth(self, depth: np.ndarray) -> np.ndarray:
+        if self.edge_smooth_d <= 0:
+            return depth
+        depth_in = depth.astype(np.float32, copy=False)
+        invalid = ~np.isfinite(depth_in) | (depth_in <= 0.0)
+        depth_filter = depth_in.copy()
+        depth_filter[invalid] = 0.0
+        smoothed = cv2.bilateralFilter(
+            depth_filter,
+            self.edge_smooth_d,
+            self.edge_smooth_sigma_color,
+            self.edge_smooth_sigma_space,
+        )
+        smoothed[invalid] = depth_in[invalid]
+        return smoothed
 
     def _publish_fused_depth(self, fused_depth: np.ndarray, depth_msg: Image) -> None:
         fused_msg = self.bridge.cv2_to_imgmsg(
