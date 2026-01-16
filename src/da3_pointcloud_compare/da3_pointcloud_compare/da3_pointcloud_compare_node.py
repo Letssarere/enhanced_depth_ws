@@ -651,11 +651,12 @@ class DA3PointCloudCompareNode(Node):
 
     @staticmethod
     def _camera_info_to_k(info_msg: CameraInfo) -> Optional[np.ndarray]:
-        if info_msg.k and len(info_msg.k) == 9:
-            return np.array(info_msg.k, dtype=np.float32).reshape(3, 3)
-        if info_msg.p and len(info_msg.p) >= 9:
-            k = np.array(info_msg.p[:9], dtype=np.float32).reshape(3, 3)
-            return k
+        k_vals = np.asarray(info_msg.k, dtype=np.float32)
+        if k_vals.size == 9:
+            return k_vals.reshape(3, 3)
+        p_vals = np.asarray(info_msg.p, dtype=np.float32)
+        if p_vals.size >= 9:
+            return p_vals[:9].reshape(3, 3)
         return None
 
     def _get_uv_grid(self, width: int, height: int) -> Tuple[np.ndarray, np.ndarray]:
