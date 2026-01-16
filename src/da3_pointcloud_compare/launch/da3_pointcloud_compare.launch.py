@@ -21,18 +21,28 @@ def generate_launch_description() -> LaunchDescription:
 
     use_rviz = LaunchConfiguration("use_rviz")
     rviz_view = LaunchConfiguration("rviz_view")
+    use_table_roi = LaunchConfiguration("use_table_roi")
+    roi_yaml_path = LaunchConfiguration("roi_yaml_path")
 
     return LaunchDescription(
         [
             DeclareLaunchArgument("params_file", default_value=params_file),
             DeclareLaunchArgument("use_rviz", default_value="true"),
             DeclareLaunchArgument("rviz_view", default_value="both"),
+            DeclareLaunchArgument("use_table_roi", default_value="false"),
+            DeclareLaunchArgument("roi_yaml_path", default_value=""),
             Node(
                 package="da3_pointcloud_compare",
                 executable="da3_pointcloud_compare_node",
                 name="da3_pointcloud_compare_node",
                 output="screen",
-                parameters=[LaunchConfiguration("params_file")],
+                parameters=[
+                    LaunchConfiguration("params_file"),
+                    {
+                        "use_table_roi": use_table_roi,
+                        "roi_yaml_path": roi_yaml_path,
+                    },
+                ],
             ),
             Node(
                 package="rviz2",

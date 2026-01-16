@@ -23,6 +23,37 @@ try:
 except ImportError:  # pragma: no cover - handled at runtime
     cuda = None
 
+try:
+    import yaml
+except ImportError:  # pragma: no cover - handled at runtime
+    yaml = None
+
+
+def resolve_default_roi_yaml_path() -> Path:
+    candidates = []
+    candidates.append(
+        Path.cwd()
+        / "src"
+        / "table_depth_fusion"
+        / "config"
+        / "calibration_params.yaml"
+    )
+    try:
+        share_dir = Path(get_package_share_directory("table_depth_fusion"))
+        candidates.append(share_dir / "config" / "calibration_params.yaml")
+    except Exception:
+        pass
+
+    source_root = Path(__file__).resolve().parents[3]
+    candidates.append(
+        source_root / "table_depth_fusion" / "config" / "calibration_params.yaml"
+    )
+
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return candidates[-1]
+
 
 def resolve_default_engine_path() -> Path:
     candidates = []
@@ -101,6 +132,8 @@ class DA3PointCloudCompareNode(Node):
         self.declare_parameter("model_intrinsics_warn_once", True)
         self.declare_parameter("points_model_topic", "/da3/points_model_k")
         self.declare_parameter("points_camera_topic", "/da3/points_camera_k")
+        self.declare_parameter("use_table_roi", False)
+        self.declare_parameter("roi_yaml_path", str(resolve_default_roi_yaml_path()))
 
         self.engine_path = self._resolve_engine_path(
             str(self.get_parameter("engine_path").value)
@@ -128,6 +161,10 @@ class DA3PointCloudCompareNode(Node):
         self.model_intrinsics_warn_once = bool(
             self.get_parameter("model_intrinsics_warn_once").value
         )
+        self.use_table_roi = bool(self.get_parameter("use_table_roi").value)
+        self.roi_yaml_path = self._resolve_roi_yaml_path(
+            str(self.get_parameter("roi_yaml_path").value)
+        )
 
         self.model_topic = str(self.get_parameter("points_model_topic").value)
         self.camera_topic = str(self.get_parameter("points_camera_topic").value)
@@ -154,6 +191,12 @@ class DA3PointCloudCompareNode(Node):
 
         self.intrinsics_missing_warned = False
         self.intrinsics_format_warned = False
+        self.roi_mask_warned = False
+
+        self.roi_corners_2d = None
+        self.roi_mask = None
+        self.roi_mask_sampled = None
+        self.roi_mask_shape = None
 
         if trt is None or cuda is None:
             raise RuntimeError(
@@ -191,6 +234,14 @@ class DA3PointCloudCompareNode(Node):
                 return path
             return Path.cwd() / path
         return resolve_default_engine_path()
+
+    def _resolve_roi_yaml_path(self, raw_path: str) -> Path:
+        if raw_path.strip():
+            path = Path(raw_path)
+            if path.is_absolute():
+                return path
+            return Path.cwd() / path
+        return resolve_default_roi_yaml_path()
 
     def _init_trt_engine(self) -> bool:
         engine_path = self.engine_path
@@ -402,6 +453,9 @@ class DA3PointCloudCompareNode(Node):
         if camera_k is None:
             self.get_logger().warning("CameraInfo missing intrinsics; skipping.")
             return
+
+        if self.use_table_roi:
+            self._ensure_roi_mask(depth.shape[0], depth.shape[1])
 
         if self.publish_rgb:
             rgb = cv2.cvtColor(color_bgr, cv2.COLOR_BGR2RGB)
@@ -679,6 +733,19 @@ class DA3PointCloudCompareNode(Node):
             valid &= sampled > self.min_depth_m
         if self.max_depth_m > 0.0:
             valid &= sampled < self.max_depth_m
+        if self.use_table_roi:
+            roi_mask = self._get_roi_mask_sampled(height, width)
+            if roi_mask is not None:
+                if roi_mask.shape != sampled.shape:
+                    self._ensure_roi_mask(height, width)
+                    roi_mask = self._get_roi_mask_sampled(height, width)
+                if roi_mask is not None and roi_mask.shape == sampled.shape:
+                    valid &= roi_mask
+            elif not self.roi_mask_warned:
+                self.get_logger().warning(
+                    "ROI mask unavailable; publishing full-frame point cloud."
+                )
+                self.roi_mask_warned = True
 
         if not np.any(valid):
             return None, None
@@ -704,6 +771,92 @@ class DA3PointCloudCompareNode(Node):
             sampled_rgb = rgb[:: self.point_stride, :: self.point_stride]
             colors = sampled_rgb.reshape(-1, 3)[mask]
         return points.astype(np.float32), colors
+
+    def _ensure_roi_mask(self, height: int, width: int) -> None:
+        if not self.use_table_roi:
+            return
+        if self.roi_mask_shape == (height, width):
+            return
+        if self.roi_corners_2d is None:
+            self.roi_corners_2d = self._load_roi_corners()
+        if self.roi_corners_2d is None:
+            return
+        mask = np.zeros((height, width), dtype=np.uint8)
+        corners = np.round(self.roi_corners_2d).astype(np.int32)
+        cv2.fillPoly(mask, [corners], 1)
+        self.roi_mask = mask.astype(bool)
+        self.roi_mask_sampled = self.roi_mask[
+            :: self.point_stride, :: self.point_stride
+        ]
+        self.roi_mask_shape = (height, width)
+
+    def _get_roi_mask_sampled(
+        self, height: int, width: int
+    ) -> Optional[np.ndarray]:
+        if not self.use_table_roi:
+            return None
+        if self.roi_mask_shape != (height, width) or self.roi_mask_sampled is None:
+            self._ensure_roi_mask(height, width)
+        return self.roi_mask_sampled
+
+    def _load_roi_corners(self) -> Optional[np.ndarray]:
+        if yaml is None:
+            if not self.roi_mask_warned:
+                self.get_logger().warning(
+                    "PyYAML not available; cannot load roi_corners_2d."
+                )
+                self.roi_mask_warned = True
+            return None
+        if self.roi_yaml_path is None or not self.roi_yaml_path.exists():
+            if not self.roi_mask_warned:
+                self.get_logger().warning(
+                    f"ROI YAML not found: {self.roi_yaml_path}"
+                )
+                self.roi_mask_warned = True
+            return None
+        try:
+            with self.roi_yaml_path.open("r") as yaml_file:
+                data = yaml.safe_load(yaml_file)
+        except Exception as exc:
+            if not self.roi_mask_warned:
+                self.get_logger().warning(f"Failed to read ROI YAML: {exc}")
+                self.roi_mask_warned = True
+            return None
+
+        corners = self._extract_roi_corners_from_yaml(data)
+        if corners is None and not self.roi_mask_warned:
+            self.get_logger().warning(
+                f"roi_corners_2d not found in {self.roi_yaml_path}"
+            )
+            self.roi_mask_warned = True
+        return corners
+
+    def _extract_roi_corners_from_yaml(self, data) -> Optional[np.ndarray]:
+        if not isinstance(data, dict):
+            return None
+        node_section = data.get("fusion_depth_calibration_node")
+        if isinstance(node_section, dict):
+            params = node_section.get("ros__parameters")
+            if isinstance(params, dict) and "roi_corners_2d" in params:
+                return self._parse_roi_corners(params["roi_corners_2d"])
+        for _, node_data in data.items():
+            if isinstance(node_data, dict):
+                params = node_data.get("ros__parameters")
+                if isinstance(params, dict) and "roi_corners_2d" in params:
+                    return self._parse_roi_corners(params["roi_corners_2d"])
+        if "roi_corners_2d" in data:
+            return self._parse_roi_corners(data["roi_corners_2d"])
+        return None
+
+    @staticmethod
+    def _parse_roi_corners(value) -> Optional[np.ndarray]:
+        try:
+            arr = np.array(value, dtype=np.float32).reshape(-1)
+        except Exception:
+            return None
+        if arr.size != 8:
+            return None
+        return arr.reshape(4, 2)
 
     def _create_cloud(
         self, header: Header, points: np.ndarray, colors: Optional[np.ndarray]

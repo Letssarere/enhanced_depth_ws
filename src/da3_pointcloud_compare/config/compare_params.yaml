@@ -20,3 +20,5 @@ da3_pointcloud_compare_node:
     model_intrinsics_warn_once: true
     points_model_topic: /da3/points_model_k
     points_camera_topic: /da3/points_camera_k
+    use_table_roi: false
+    roi_yaml_path: ""

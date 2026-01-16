@@ -20,6 +20,13 @@ Compare point clouds generated from the same TensorRT depth output using two set
 - Camera only:
   - ros2 launch da3_pointcloud_compare da3_pointcloud_compare.launch.py rviz_view:=camera
 
+## ROI-Only Point Cloud
+- Use ROI from table_depth_fusion calibration_params.yaml (full-frame inference remains):
+  - ros2 launch da3_pointcloud_compare da3_pointcloud_compare.launch.py use_table_roi:=true
+- Override YAML path if needed:
+  - ros2 launch da3_pointcloud_compare da3_pointcloud_compare.launch.py use_table_roi:=true \\
+    roi_yaml_path:=/path/to/calibration_params.yaml
+
 ## Validation Checklist
 - RViz fixed frame matches the point cloud frame_id (default: camera_color_optical_frame).
 - Depth scale looks reasonable (set depth_scale if the model outputs relative depth).
