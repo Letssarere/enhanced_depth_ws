@@ -615,7 +615,7 @@ class FusionDepthNode(Node):
             if mde_depth is not None:
                 mde_metric = self._scale_recover(depth_crop, mde_depth)
                 fused_depth = self._rs_first_fusion(depth_crop, mde_metric)
-                fused_depth = self._edge_aware_smooth(fused_depth)
+                fused_depth = self._edge_aware_smooth(fused_depth, guide_depth=mde_metric)
 
         self._publish_fused_depth(fused_depth, depth_msg)
         self._publish_point_cloud(fused_depth, depth_msg.header.stamp)
@@ -841,21 +841,90 @@ class FusionDepthNode(Node):
         fused[replace] = mde_metric[replace]
         return fused
 
-    def _edge_aware_smooth(self, depth: np.ndarray) -> np.ndarray:
+    def _edge_aware_smooth(
+        self,
+        depth: np.ndarray,
+        guide_depth: Optional[np.ndarray] = None,
+        guide_color: Optional[np.ndarray] = None,
+    ) -> np.ndarray:
         if self.edge_smooth_d <= 0:
             return depth
         depth_in = depth.astype(np.float32, copy=False)
         invalid = ~np.isfinite(depth_in) | (depth_in <= 0.0)
         depth_filter = depth_in.copy()
         depth_filter[invalid] = 0.0
-        smoothed = cv2.bilateralFilter(
-            depth_filter,
-            self.edge_smooth_d,
-            self.edge_smooth_sigma_color,
-            self.edge_smooth_sigma_space,
-        )
+        smoothed = None
+
+        guide = None
+        guide_is_depth = False
+        if guide_depth is not None:
+            guide = guide_depth.astype(np.float32, copy=False)
+            guide = guide.copy()
+            guide[~np.isfinite(guide) | (guide <= 0.0)] = 0.0
+            guide_is_depth = True
+        elif guide_color is not None:
+            guide = guide_color.astype(np.float32, copy=False)
+            if guide.max() > 1.0:
+                guide = guide / 255.0
+
+        ximgproc = getattr(cv2, "ximgproc", None)
+        if guide is not None and ximgproc is not None:
+            if hasattr(ximgproc, "guidedFilter"):
+                radius = max(1, self.edge_smooth_d)
+                eps = max(1e-6, float(self.edge_smooth_sigma_color) ** 2)
+                try:
+                    smoothed = ximgproc.guidedFilter(guide, depth_filter, radius, eps)
+                except cv2.error:
+                    smoothed = None
+            if smoothed is None and hasattr(ximgproc, "jointBilateralFilter"):
+                guide_u8 = guide
+                if guide_u8.dtype != np.uint8:
+                    if guide_is_depth:
+                        guide_u8 = self._normalize_guide_depth(guide_depth)
+                    else:
+                        guide_u8 = np.clip(guide * 255.0, 0, 255).astype(np.uint8)
+                if guide_u8 is not None:
+                    try:
+                        smoothed = ximgproc.jointBilateralFilter(
+                            guide_u8,
+                            depth_filter,
+                            self.edge_smooth_d,
+                            float(self.edge_smooth_sigma_color),
+                            float(self.edge_smooth_sigma_space),
+                        )
+                    except cv2.error:
+                        smoothed = None
+
+        if smoothed is None:
+            smoothed = cv2.bilateralFilter(
+                depth_filter,
+                self.edge_smooth_d,
+                self.edge_smooth_sigma_color,
+                self.edge_smooth_sigma_space,
+            )
+
         smoothed[invalid] = depth_in[invalid]
         return smoothed
+
+    @staticmethod
+    def _normalize_guide_depth(guide_depth: Optional[np.ndarray]) -> Optional[np.ndarray]:
+        if guide_depth is None:
+            return None
+        guide = guide_depth.astype(np.float32, copy=False)
+        valid = np.isfinite(guide) & (guide > 0.0)
+        if not np.any(valid):
+            return None
+        values = guide[valid]
+        low = float(np.percentile(values, 5.0))
+        high = float(np.percentile(values, 95.0))
+        if not np.isfinite(low) or not np.isfinite(high) or high <= low:
+            low = float(np.min(values))
+            high = float(np.max(values))
+        if high <= low:
+            return None
+        norm = (guide - low) / (high - low)
+        norm = np.clip(norm, 0.0, 1.0)
+        return (norm * 255.0).astype(np.uint8)
 
     def _publish_fused_depth(self, fused_depth: np.ndarray, depth_msg: Image) -> None:
         fused_msg = self.bridge.cv2_to_imgmsg(
