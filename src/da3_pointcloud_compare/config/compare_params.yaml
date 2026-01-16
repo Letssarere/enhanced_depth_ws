@@ -1,0 +1,22 @@
+da3_pointcloud_compare_node:
+  ros__parameters:
+    color_topic: /camera/color/image_raw
+    camera_info_topic: /camera/color/camera_info
+    engine_path: ""
+    input_width: 0
+    input_height: 0
+    letterbox: true
+    depth_scale: 1.0
+    min_depth_m: 0.1
+    max_depth_m: 5.0
+    point_stride: 2
+    frame_id: camera_color_optical_frame
+    publish_rgb: false
+    sync_slop: 0.1
+    queue_size: 5
+    model_depth_output: ""
+    model_intrinsics_output: ""
+    model_intrinsics_format: pixels
+    model_intrinsics_warn_once: true
+    points_model_topic: /da3/points_model_k
+    points_camera_topic: /da3/points_camera_k

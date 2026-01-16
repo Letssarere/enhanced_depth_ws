@@ -1,0 +1,73 @@
+Panels:
+- Class: rviz_common/Displays
+  Name: Displays
+- Class: rviz_common/Views
+  Name: Views
+- Class: rviz_common/Time
+  Name: Time
+Visualization Manager:
+  Class: ""
+  Displays:
+  - Alpha: 0.5
+    Cell Size: 1
+    Class: rviz_default_plugins/Grid
+    Color: 160; 160; 160
+    Enabled: true
+    Name: Grid
+    Plane: XY
+    Plane Cell Count: 50
+    Reference Frame: <Fixed Frame>
+  - Class: rviz_default_plugins/PointCloud2
+    Color Transformer: FlatColor
+    Color: 255; 80; 80
+    Enabled: true
+    Name: Model K Points
+    Queue Size: 10
+    Selectable: true
+    Size (m): 0.01
+    Style: Points
+    Topic: /da3/points_model_k
+    Use Fixed Frame: true
+  Global Options:
+    Background Color: 48; 48; 48
+    Fixed Frame: camera_color_optical_frame
+    Frame Rate: 30
+  Name: root
+  Tools:
+  - Class: rviz_default_plugins/Interact
+    Hide Inactive Objects: true
+  - Class: rviz_default_plugins/MoveCamera
+  - Class: rviz_default_plugins/Select
+  - Class: rviz_default_plugins/FocusCamera
+  - Class: rviz_default_plugins/Measure
+  - Class: rviz_default_plugins/PublishPoint
+  Views:
+    Current:
+      Class: rviz_default_plugins/Orbit
+      Distance: 1.5
+      Enable Stereo Rendering:
+        Stereo Eye Separation: 0.06
+        Stereo Focal Distance: 1.0
+        Swap Stereo Eyes: false
+        Value: false
+      Focal Point:
+        X: 0.0
+        Y: 0.0
+        Z: 0.0
+      Focal Shape Fixed Size: true
+      Focal Shape Size: 0.05
+      Invert Z Axis: false
+      Name: Orbit
+      Near Clip Distance: 0.01
+      Pitch: 0.6
+      Target Frame: <Fixed Frame>
+      Yaw: 0.6
+Window Geometry:
+  Displays:
+    collapsed: false
+  Height: 768
+  Hide Left Dock: false
+  Hide Right Dock: false
+  Width: 1024
+  X: 100
+  Y: 100
