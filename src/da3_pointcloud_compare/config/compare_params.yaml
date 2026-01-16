@@ -11,7 +11,7 @@ da3_pointcloud_compare_node:
     max_depth_m: 5.0
     point_stride: 2
     frame_id: camera_color_optical_frame
-    publish_rgb: false
+    publish_rgb: true
     sync_slop: 0.1
     queue_size: 5
     model_depth_output: ""

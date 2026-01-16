@@ -92,7 +92,7 @@ class DA3PointCloudCompareNode(Node):
         self.declare_parameter("max_depth_m", 5.0)
         self.declare_parameter("point_stride", 2)
         self.declare_parameter("frame_id", "camera_color_optical_frame")
-        self.declare_parameter("publish_rgb", False)
+        self.declare_parameter("publish_rgb", True)
         self.declare_parameter("sync_slop", 0.1)
         self.declare_parameter("queue_size", 5)
         self.declare_parameter("model_depth_output", "")

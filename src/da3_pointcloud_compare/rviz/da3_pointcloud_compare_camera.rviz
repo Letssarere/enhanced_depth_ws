@@ -18,8 +18,7 @@ Visualization Manager:
     Plane Cell Count: 50
     Reference Frame: <Fixed Frame>
   - Class: rviz_default_plugins/PointCloud2
-    Color Transformer: FlatColor
-    Color: 80; 200; 255
+    Color Transformer: RGB8
     Enabled: true
     Name: Camera K Points
     Queue Size: 10
