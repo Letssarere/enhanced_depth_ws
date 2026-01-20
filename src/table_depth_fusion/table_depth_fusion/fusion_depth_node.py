@@ -8,8 +8,8 @@ from ament_index_python.packages import get_package_share_directory
 from cv_bridge import CvBridge
 from message_filters import ApproximateTimeSynchronizer, Subscriber
 from rclpy.node import Node
-from sensor_msgs.msg import Image, PointCloud2
-from sensor_msgs_py import point_cloud2
+from rclpy.qos import qos_profile_sensor_data
+from sensor_msgs.msg import Image, PointCloud2, PointField
 from std_msgs.msg import Header
 
 try:
@@ -142,6 +142,7 @@ class FusionDepthNode(Node):
         self.use_mde = bool(self.get_parameter("use_mde").value)
         self.mde_backend = str(self.get_parameter("mde_backend").value).lower()
         self.mde_warned = False
+        self.color_mismatch_warned = False
         self.mde_input_width = int(self.get_parameter("mde_input_width").value)
         self.mde_input_height = int(self.get_parameter("mde_input_height").value)
         self.mde_letterbox = bool(self.get_parameter("mde_letterbox").value)
@@ -228,16 +229,17 @@ class FusionDepthNode(Node):
                     if not self._init_mde_session():
                         self.use_mde = False
 
-        if self.use_mde:
-            color_topic = self.get_parameter("color_topic").value
-            self.color_sub = Subscriber(self, Image, color_topic)
-            self.depth_sub = Subscriber(self, Image, depth_topic)
-            self.sync = ApproximateTimeSynchronizer(
-                [self.color_sub, self.depth_sub], queue_size=5, slop=0.1
-            )
-            self.sync.registerCallback(self._synced_cb)
-        else:
-            self.create_subscription(Image, depth_topic, self._depth_only_cb, 10)
+        color_topic = self.get_parameter("color_topic").value
+        self.color_sub = Subscriber(
+            self, Image, color_topic, qos_profile=qos_profile_sensor_data
+        )
+        self.depth_sub = Subscriber(
+            self, Image, depth_topic, qos_profile=qos_profile_sensor_data
+        )
+        self.sync = ApproximateTimeSynchronizer(
+            [self.color_sub, self.depth_sub], queue_size=5, slop=0.1
+        )
+        self.sync.registerCallback(self._synced_cb)
 
         self.get_logger().info("Fusion depth runtime node started.")
 
@@ -617,8 +619,30 @@ class FusionDepthNode(Node):
                 fused_depth = self._rs_first_fusion(depth_crop, mde_metric)
                 fused_depth = self._edge_aware_smooth(fused_depth, guide_depth=mde_metric)
 
+        color_rgb = None
+        try:
+            color = self.bridge.imgmsg_to_cv2(color_msg, desired_encoding="bgr8")
+        except Exception as exc:
+            self.get_logger().warning(f"Failed to convert color image: {exc}")
+            color = None
+        if color is not None:
+            color_crop = color[y_min : y_min + crop_h, x_min : x_min + crop_w]
+            if color_crop.size > 0:
+                if color_crop.shape[:2] != depth_crop.shape:
+                    if not self.color_mismatch_warned:
+                        self.get_logger().warning(
+                            "Color/depth crop size mismatch; resizing color crop."
+                        )
+                        self.color_mismatch_warned = True
+                    color_crop = cv2.resize(
+                        color_crop,
+                        (depth_crop.shape[1], depth_crop.shape[0]),
+                        interpolation=cv2.INTER_LINEAR,
+                    )
+                color_rgb = cv2.cvtColor(color_crop, cv2.COLOR_BGR2RGB)
+
         self._publish_fused_depth(fused_depth, depth_msg)
-        self._publish_point_cloud(fused_depth, depth_msg.header.stamp)
+        self._publish_point_cloud(fused_depth, depth_msg.header.stamp, color_rgb)
 
     def _depth_only_cb(self, depth_msg: Image) -> None:
         depth = self.bridge.imgmsg_to_cv2(depth_msg, desired_encoding="passthrough")
@@ -628,7 +652,7 @@ class FusionDepthNode(Node):
         depth_crop = depth[y_min : y_min + crop_h, x_min : x_min + crop_w]
 
         self._publish_fused_depth(depth_crop, depth_msg)
-        self._publish_point_cloud(depth_crop, depth_msg.header.stamp)
+        self._publish_point_cloud(depth_crop, depth_msg.header.stamp, None)
 
     def _infer_mde(
         self, color_msg: Image, x_min: int, y_min: int, crop_w: int, crop_h: int
@@ -933,7 +957,9 @@ class FusionDepthNode(Node):
         fused_msg.header = depth_msg.header
         self.fused_pub.publish(fused_msg)
 
-    def _publish_point_cloud(self, fused_depth: np.ndarray, stamp) -> None:
+    def _publish_point_cloud(
+        self, fused_depth: np.ndarray, stamp, color_rgb: Optional[np.ndarray]
+    ) -> None:
         sampled = fused_depth[:: self.point_stride, :: self.point_stride]
         valid = np.isfinite(sampled) & (sampled > 0.0)
         valid &= self.roi_mask_sampled
@@ -943,20 +969,66 @@ class FusionDepthNode(Node):
         x = self.x_norm * sampled
         y = self.y_norm * sampled
         z = sampled
-        points = np.stack([x, y, z], axis=-1)[valid]
+        points = np.stack([x, y, z], axis=-1).reshape(-1, 3)
+        valid_flat = valid.reshape(-1)
+        points = points[valid_flat]
 
         ones = np.ones((points.shape[0], 1), dtype=np.float32)
         points_h = np.concatenate([points.astype(np.float32), ones], axis=1)
         points_table = (self.t_matrix @ points_h.T).T[:, :3]
 
+        colors = self._extract_colors(color_rgb, valid_flat)
         header = self._create_header(stamp)
-        cloud_msg = point_cloud2.create_cloud_xyz32(
-            header, points_table.astype(np.float32)
+        cloud_msg = self._create_cloud_xyzrgb32(
+            header, points_table.astype(np.float32), colors
         )
         self.points_pub.publish(cloud_msg)
 
     def _create_header(self, stamp):
         return Header(stamp=stamp, frame_id=self.frame_id)
+
+    def _extract_colors(
+        self, color_rgb: Optional[np.ndarray], valid_flat: np.ndarray
+    ) -> np.ndarray:
+        if color_rgb is None:
+            return np.zeros((int(valid_flat.sum()), 3), dtype=np.uint8)
+        sampled_rgb = color_rgb[:: self.point_stride, :: self.point_stride]
+        colors = sampled_rgb.reshape(-1, 3)[valid_flat]
+        if colors.dtype != np.uint8:
+            colors = np.clip(colors, 0, 255).astype(np.uint8)
+        return colors
+
+    @staticmethod
+    def _create_cloud_xyzrgb32(
+        header: Header, points: np.ndarray, colors: np.ndarray
+    ) -> PointCloud2:
+        msg = PointCloud2()
+        msg.header = header
+        msg.height = 1
+        msg.width = int(points.shape[0])
+        msg.is_bigendian = False
+        msg.is_dense = False
+
+        if colors.shape[0] != points.shape[0]:
+            colors = np.zeros((points.shape[0], 3), dtype=np.uint8)
+
+        colors_u32 = colors.astype(np.uint32)
+        rgb = (colors_u32[:, 0] << 16) | (colors_u32[:, 1] << 8) | colors_u32[:, 2]
+        rgb_packed = rgb.view(np.float32)
+        cloud = np.empty((points.shape[0], 4), dtype=np.float32)
+        cloud[:, 0:3] = points.astype(np.float32)
+        cloud[:, 3] = rgb_packed
+
+        msg.fields = [
+            PointField(name="x", offset=0, datatype=PointField.FLOAT32, count=1),
+            PointField(name="y", offset=4, datatype=PointField.FLOAT32, count=1),
+            PointField(name="z", offset=8, datatype=PointField.FLOAT32, count=1),
+            PointField(name="rgb", offset=12, datatype=PointField.FLOAT32, count=1),
+        ]
+        msg.point_step = 16
+        msg.row_step = msg.point_step * msg.width
+        msg.data = cloud.tobytes()
+        return msg
 
 
 def main() -> None:

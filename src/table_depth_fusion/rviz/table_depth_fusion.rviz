@@ -22,7 +22,7 @@ Visualization Manager:
     Plane Cell Count: 50
     Reference Frame: <Fixed Frame>
   - Class: rviz_default_plugins/PointCloud2
-    Color Transformer: AxisColor
+    Color Transformer: RGB8
     Enabled: true
     Name: Table Points
     Queue Size: 10
