@@ -1,6 +1,7 @@
 fusion_depth_node:
   ros__parameters:
     use_mde: true
+    mde_use_full_color: true
     mde_backend: tensorrt
     # Relative paths are resolved against the package share directory.
     mde_model_path: models/depth_anything_v3_small/onnx/model.onnx

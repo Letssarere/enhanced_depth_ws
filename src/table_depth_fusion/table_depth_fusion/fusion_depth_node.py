@@ -121,6 +121,7 @@ class FusionDepthNode(Node):
         self.declare_parameter("point_stride", 1)
         self.declare_parameter("safe_zone_min_points", 50)
         self.declare_parameter("use_mde", False)
+        self.declare_parameter("mde_use_full_color", False)
         self.declare_parameter("mde_backend", "onnxruntime")
         self.declare_parameter("mde_model_path", "")
         self.declare_parameter("mde_engine_path", "")
@@ -140,8 +141,12 @@ class FusionDepthNode(Node):
         self.point_stride = max(1, int(self.get_parameter("point_stride").value))
         self.safe_zone_min_points = int(self.get_parameter("safe_zone_min_points").value)
         self.use_mde = bool(self.get_parameter("use_mde").value)
+        self.mde_use_full_color = bool(
+            self.get_parameter("mde_use_full_color").value
+        )
         self.mde_backend = str(self.get_parameter("mde_backend").value).lower()
         self.mde_warned = False
+        self.mde_full_warned = False
         self.color_mismatch_warned = False
         self.mde_input_width = int(self.get_parameter("mde_input_width").value)
         self.mde_input_height = int(self.get_parameter("mde_input_height").value)
@@ -613,7 +618,43 @@ class FusionDepthNode(Node):
 
         fused_depth = depth_crop
         if self.use_mde:
-            mde_depth = self._infer_mde(color_msg, x_min, y_min, crop_w, crop_h)
+            mde_depth = None
+            if self.mde_use_full_color:
+                full_w = int(color_msg.width)
+                full_h = int(color_msg.height)
+                if full_w > 0 and full_h > 0:
+                    mde_full = self._infer_mde(color_msg, 0, 0, full_w, full_h)
+                    if mde_full is not None:
+                        if mde_full.shape != (full_h, full_w):
+                            if not self.mde_full_warned:
+                                self.get_logger().warning(
+                                    "MDE output size mismatch; resizing full-frame output."
+                                )
+                                self.mde_full_warned = True
+                            mde_full = cv2.resize(
+                                mde_full,
+                                (full_w, full_h),
+                                interpolation=cv2.INTER_CUBIC,
+                            )
+                        if (
+                            y_min + crop_h <= mde_full.shape[0]
+                            and x_min + crop_w <= mde_full.shape[1]
+                        ):
+                            mde_depth = mde_full[
+                                y_min : y_min + crop_h, x_min : x_min + crop_w
+                            ]
+                        elif not self.mde_full_warned:
+                            self.get_logger().warning(
+                                "MDE full-frame output smaller than ROI crop; skipping MDE."
+                            )
+                            self.mde_full_warned = True
+                elif not self.mde_full_warned:
+                    self.get_logger().warning(
+                        "Color image size invalid; skipping full-frame MDE."
+                    )
+                    self.mde_full_warned = True
+            else:
+                mde_depth = self._infer_mde(color_msg, x_min, y_min, crop_w, crop_h)
             if mde_depth is not None:
                 mde_metric = self._scale_recover(depth_crop, mde_depth)
                 fused_depth = self._rs_first_fusion(depth_crop, mde_metric)
