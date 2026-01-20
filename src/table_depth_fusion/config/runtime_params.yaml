@@ -4,10 +4,10 @@ fusion_depth_node:
     mde_backend: tensorrt
     # Relative paths are resolved against the package share directory.
     mde_model_path: models/depth_anything_v3_small/onnx/model.onnx
-    mde_engine_path: models/depth_anything_v3_small/tensorrt/model_fp16.engine
+    mde_engine_path: models/depth_anything_v3_small/tensorrt/model_fp16_640x480.engine
     # Fixed MDE input size (letterbox with aspect ratio preserved).
-    mde_input_width: 576
-    mde_input_height: 128
+    mde_input_width: 640
+    mde_input_height: 480
     mde_letterbox: true
     spike_median_ksize: 3
     spike_thresh_m: 0.03

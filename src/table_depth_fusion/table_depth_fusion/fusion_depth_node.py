@@ -88,7 +88,7 @@ def resolve_default_engine_path() -> Path:
             / "models"
             / "depth_anything_v3_small"
             / "tensorrt"
-            / "model_fp16.engine"
+            / "model_fp16_640x480.engine"
         )
     except Exception:
         pass
@@ -99,7 +99,7 @@ def resolve_default_engine_path() -> Path:
         / "models"
         / "depth_anything_v3_small"
         / "tensorrt"
-        / "model_fp16.engine"
+        / "model_fp16_640x480.engine"
     )
 
     for candidate in candidates:

@@ -60,7 +60,11 @@ def resolve_default_engine_path() -> Path:
     try:
         share_dir = Path(get_package_share_directory("da3_pointcloud_compare"))
         candidates.append(
-            share_dir / "models" / "da3_small" / "tensorrt" / "model_fp16.engine"
+            share_dir
+            / "models"
+            / "da3_small"
+            / "tensorrt"
+            / "model_fp16_640x480.engine"
         )
     except Exception:
         pass
@@ -72,7 +76,7 @@ def resolve_default_engine_path() -> Path:
             / "models"
             / "depth_anything_v3_small"
             / "tensorrt"
-            / "model_fp16.engine"
+            / "model_fp16_640x480.engine"
         )
     except Exception:
         pass
@@ -84,7 +88,7 @@ def resolve_default_engine_path() -> Path:
         / "models"
         / "da3_small"
         / "tensorrt"
-        / "model_fp16.engine"
+        / "model_fp16_640x480.engine"
     )
     candidates.append(
         Path.cwd()
@@ -93,12 +97,16 @@ def resolve_default_engine_path() -> Path:
         / "models"
         / "depth_anything_v3_small"
         / "tensorrt"
-        / "model_fp16.engine"
+        / "model_fp16_640x480.engine"
     )
 
     package_root = Path(__file__).resolve().parents[1]
     candidates.append(
-        package_root / "models" / "da3_small" / "tensorrt" / "model_fp16.engine"
+        package_root
+        / "models"
+        / "da3_small"
+        / "tensorrt"
+        / "model_fp16_640x480.engine"
     )
 
     for candidate in candidates:

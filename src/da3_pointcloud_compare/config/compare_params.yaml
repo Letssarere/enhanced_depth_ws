@@ -2,9 +2,9 @@ da3_pointcloud_compare_node:
   ros__parameters:
     color_topic: /camera/color/image_raw
     camera_info_topic: /camera/color/camera_info
-    engine_path: ""
-    input_width: 0
-    input_height: 0
+    engine_path: models/da3_small/tensorrt/model_fp16_640x480.engine
+    input_width: 640
+    input_height: 480
     letterbox: true
     depth_scale: 1.0
     min_depth_m: 0.1
