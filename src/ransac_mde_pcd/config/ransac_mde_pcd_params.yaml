@@ -1,0 +1,25 @@
+ransac_mde_pcd_node:
+  ros__parameters:
+    color_topic: /camera/color/image_raw
+    camera_info_topic: /camera/color/camera_info
+    engine_path: ""
+    input_width: 0
+    input_height: 0
+    letterbox: true
+    depth_scale: 1.0
+    min_depth_m: 0.1
+    max_depth_m: 5.0
+    point_stride: 2
+    frame_id: table_link
+    publish_rgb: true
+    sync_slop: 0.1
+    queue_size: 5
+    points_topic: /ransac_mde_pcd/points_table
+    use_table_roi: true
+    roi_yaml_path: ""
+    model_depth_output: ""
+    ransac_max_iterations: 150
+    ransac_distance_thresh_m: 0.01
+    ransac_min_inliers: 500
+    ransac_stop_ratio: 0.9
+    ransac_refine: true
