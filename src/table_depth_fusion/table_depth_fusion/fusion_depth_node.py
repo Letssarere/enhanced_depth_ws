@@ -122,7 +122,7 @@ class FusionDepthNode(Node):
         self.declare_parameter("safe_zone_min_points", 50)
         self.declare_parameter("use_mde", False)
         self.declare_parameter("fusion_mode", "rs_first")
-        self.declare_parameter("mde_use_full_color", False)
+        self.declare_parameter("mde_use_full_color", True)
         self.declare_parameter("mde_backend", "onnxruntime")
         self.declare_parameter("mde_model_path", "")
         self.declare_parameter("mde_engine_path", "")
