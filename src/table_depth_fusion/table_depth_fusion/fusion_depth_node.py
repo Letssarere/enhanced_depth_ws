@@ -121,6 +121,7 @@ class FusionDepthNode(Node):
         self.declare_parameter("point_stride", 1)
         self.declare_parameter("safe_zone_min_points", 50)
         self.declare_parameter("use_mde", False)
+        self.declare_parameter("fusion_mode", "rs_first")
         self.declare_parameter("mde_use_full_color", False)
         self.declare_parameter("mde_backend", "onnxruntime")
         self.declare_parameter("mde_model_path", "")
@@ -131,6 +132,7 @@ class FusionDepthNode(Node):
         self.declare_parameter("spike_median_ksize", 3)
         self.declare_parameter("spike_thresh_m", 0.03)
         self.declare_parameter("mde_residual_thresh_m", 0.05)
+        self.declare_parameter("mde_bias_max_m", 0.02)
         self.declare_parameter("edge_smooth_d", 5)
         self.declare_parameter("edge_smooth_sigma_color", 0.02)
         self.declare_parameter("edge_smooth_sigma_space", 5.0)
@@ -141,6 +143,7 @@ class FusionDepthNode(Node):
         self.point_stride = max(1, int(self.get_parameter("point_stride").value))
         self.safe_zone_min_points = int(self.get_parameter("safe_zone_min_points").value)
         self.use_mde = bool(self.get_parameter("use_mde").value)
+        self.fusion_mode = str(self.get_parameter("fusion_mode").value).lower()
         self.mde_use_full_color = bool(
             self.get_parameter("mde_use_full_color").value
         )
@@ -160,6 +163,9 @@ class FusionDepthNode(Node):
         self.mde_residual_thresh_m = float(
             self.get_parameter("mde_residual_thresh_m").value
         )
+        self.mde_bias_max_m = float(self.get_parameter("mde_bias_max_m").value)
+        if self.mde_bias_max_m < 0.0:
+            self.mde_bias_max_m = 0.0
         self.edge_smooth_d = int(self.get_parameter("edge_smooth_d").value)
         self.edge_smooth_sigma_color = float(
             self.get_parameter("edge_smooth_sigma_color").value
@@ -233,6 +239,12 @@ class FusionDepthNode(Node):
                 else:
                     if not self._init_mde_session():
                         self.use_mde = False
+
+        if self.fusion_mode not in ("rs_first", "mde_first"):
+            self.get_logger().warning(
+                f"Unknown fusion_mode '{self.fusion_mode}', using rs_first."
+            )
+            self.fusion_mode = "rs_first"
 
         color_topic = self.get_parameter("color_topic").value
         self.color_sub = Subscriber(
@@ -656,9 +668,27 @@ class FusionDepthNode(Node):
             else:
                 mde_depth = self._infer_mde(color_msg, x_min, y_min, crop_w, crop_h)
             if mde_depth is not None:
-                mde_metric = self._scale_recover(depth_crop, mde_depth)
-                fused_depth = self._rs_first_fusion(depth_crop, mde_metric)
-                fused_depth = self._edge_aware_smooth(fused_depth, guide_depth=mde_metric)
+                if self.fusion_mode == "mde_first":
+                    scale_params = self._estimate_scale_params(depth_crop, mde_depth)
+                    if scale_params is None:
+                        fused_depth = depth_crop
+                    else:
+                        scale, bias = scale_params
+                        if self.mde_bias_max_m > 0.0:
+                            bias = float(
+                                np.clip(bias, -self.mde_bias_max_m, self.mde_bias_max_m)
+                            )
+                        mde_metric = mde_depth * scale + bias
+                        fused_depth = self._mde_first_fusion(depth_crop, mde_metric)
+                        fused_depth = self._edge_aware_smooth(
+                            fused_depth, guide_depth=mde_metric
+                        )
+                else:
+                    mde_metric = self._scale_recover(depth_crop, mde_depth)
+                    fused_depth = self._rs_first_fusion(depth_crop, mde_metric)
+                    fused_depth = self._edge_aware_smooth(
+                        fused_depth, guide_depth=mde_metric
+                    )
 
         color_rgb = None
         try:
@@ -848,15 +878,17 @@ class FusionDepthNode(Node):
                 return input_tensor[:, 0, ...]
         return input_tensor
 
-    def _scale_recover(self, depth_metric: np.ndarray, depth_relative: np.ndarray) -> np.ndarray:
+    def _estimate_scale_params(
+        self, depth_metric: np.ndarray, depth_relative: np.ndarray
+    ) -> Optional[Tuple[float, float]]:
         if depth_metric.shape != depth_relative.shape:
             self.get_logger().warning("MDE output shape mismatch; using metric depth.")
-            return depth_metric
+            return None
 
         safe_mask = self.safe_zone_mask
         if safe_mask.shape != depth_metric.shape:
             self.get_logger().warning("Safe zone mask mismatch; using metric depth.")
-            return depth_metric
+            return None
 
         valid = (
             safe_mask
@@ -870,15 +902,26 @@ class FusionDepthNode(Node):
         if sample_count < self.safe_zone_min_points:
             self.get_logger().warning("Insufficient samples for scale recovery.")
             if sample_count == 0:
-                return depth_metric
+                return None
             median_mde = float(np.median(mde_vals))
             if abs(median_mde) < 1e-6:
-                return depth_metric
+                return None
             scale = float(np.median(real_vals)) / median_mde
-            return depth_relative * scale
+            return scale, 0.0
         design = np.column_stack([mde_vals, np.ones_like(mde_vals)])
         solution, _, _, _ = np.linalg.lstsq(design, real_vals, rcond=None)
         scale, bias = solution
+        if not np.isfinite(scale) or not np.isfinite(bias):
+            return None
+        return float(scale), float(bias)
+
+    def _scale_recover(
+        self, depth_metric: np.ndarray, depth_relative: np.ndarray
+    ) -> np.ndarray:
+        params = self._estimate_scale_params(depth_metric, depth_relative)
+        if params is None:
+            return depth_metric
+        scale, bias = params
         return depth_relative * scale + bias
 
     def _rs_first_fusion(
@@ -904,6 +947,17 @@ class FusionDepthNode(Node):
         )
         fused = depth_metric.copy()
         fused[replace] = mde_metric[replace]
+        return fused
+
+    @staticmethod
+    def _mde_first_fusion(
+        depth_metric: np.ndarray, mde_metric: np.ndarray
+    ) -> np.ndarray:
+        fused = mde_metric.copy()
+        invalid = ~np.isfinite(fused) | (fused <= 0.0)
+        rs_valid = np.isfinite(depth_metric) & (depth_metric > 0.0)
+        use_rs = invalid & rs_valid
+        fused[use_rs] = depth_metric[use_rs]
         return fused
 
     def _edge_aware_smooth(

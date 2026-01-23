@@ -1,6 +1,7 @@
 fusion_depth_node:
   ros__parameters:
     use_mde: true
+    fusion_mode: mde_first
     mde_use_full_color: true
     mde_backend: tensorrt
     # Relative paths are resolved against the package share directory.
@@ -13,6 +14,7 @@ fusion_depth_node:
     spike_median_ksize: 3
     spike_thresh_m: 0.03
     mde_residual_thresh_m: 0.05
+    mde_bias_max_m: 0.02
     edge_smooth_d: 5
     edge_smooth_sigma_color: 0.02
     edge_smooth_sigma_space: 5.0
