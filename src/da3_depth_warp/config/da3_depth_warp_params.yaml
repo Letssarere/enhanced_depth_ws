@@ -1,0 +1,15 @@
+da3_depth_warp_node:
+  ros__parameters:
+    color_topic: /camera/color/image_raw
+    engine_path: ""
+    input_width: 0
+    input_height: 0
+    letterbox: true
+    depth_scale: 1.0
+    model_depth_output: ""
+    warp_corners_2d: []
+    adaptive_block_size: 51
+    adaptive_C: 5
+    depth_raw_topic: /da3/depth_raw
+    depth_warp_topic: /da3/depth_warp
+    depth_binary_topic: /da3/depth_binary
